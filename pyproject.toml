@@ -5,7 +5,7 @@ description = "GPU 서빙 서버 스펙 산정 시뮬레이터 — 모델을 넣
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-authors = [{ name = "top00an" }]
+authors = [{ name = "rokaproj" }]
 keywords = ["llm", "capacity-planning", "server-sizing", "llama.cpp", "simulator"]
 classifiers = [
   "Development Status :: 4 - Beta",

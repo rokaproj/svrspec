@@ -400,9 +400,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Granite Rapids / Xeon 6 grade. No page for that platform was fetched this round and no CPU in cpus.json reaches it, so it stays unconfirmed rather than being given a citation it does not have."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Xeon 6(Granite Rapids)가 1DPC DDR5-6400 / 2DPC DDR5-5200 으로 동작한다고 인용 문서가 명시한다 — 이 행의 2DPC derate가 그것과 일치한다."
     },
     {
       "id": "ddr5-6400-1dpc-32gb",
@@ -413,9 +413,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Granite Rapids / Xeon 6 grade. No page for that platform was fetched this round and no CPU in cpus.json reaches it, so it stays unconfirmed rather than being given a citation it does not have."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Xeon 6(Granite Rapids)가 1DPC DDR5-6400 / 2DPC DDR5-5200 으로 동작한다고 인용 문서가 명시한다 — 이 행의 2DPC derate가 그것과 일치한다."
     },
     {
       "id": "ddr5-6400-2dpc-64gb",
@@ -426,9 +426,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (6400 -> 5200 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Xeon 6(Granite Rapids)가 1DPC DDR5-6400 / 2DPC DDR5-5200 으로 동작한다고 인용 문서가 명시한다 — 이 행의 2DPC derate가 그것과 일치한다."
     },
     {
       "id": "ddr5-6400-2dpc-32gb",
@@ -439,9 +439,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (6400 -> 5200 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Xeon 6(Granite Rapids)가 1DPC DDR5-6400 / 2DPC DDR5-5200 으로 동작한다고 인용 문서가 명시한다 — 이 행의 2DPC derate가 그것과 일치한다."
     },
     {
       "id": "mrdimm-8800-1dpc-64gb",

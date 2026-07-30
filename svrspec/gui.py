@@ -245,18 +245,55 @@ def size_payload(cat: Catalog, p: dict) -> dict:
 DEFAULT_VOLUMES = (100, 200, 300)
 
 
+def _buckets(events, span_s: float, count: int = 96) -> dict:
+    """Fold the event stream into fixed time buckets for a graph.
+
+    96 buckets over a day is a 15-minute resolution: coarse enough to draw, fine
+    enough that a thirty-second storm still shows as a spike rather than being
+    averaged out of existence.
+    """
+    if span_s <= 0:
+        return {"cpu": [0.0] * count, "queue": [0] * count, "active": [0] * count,
+                "bucket_s": 0.0}
+    width = span_s / count
+    busy = [0.0] * count
+    queue = [0] * count
+    active = [0] * count
+
+    for at, share, queued, held in events:
+        # An event can straddle buckets; charge each the part it actually held.
+        remaining, cursor = held, at
+        while remaining > 1e-9:
+            index = min(count - 1, max(0, int(cursor / width)))
+            edge = (index + 1) * width
+            slice_s = min(remaining, max(edge - cursor, 1e-9))
+            busy[index] += slice_s
+            queue[index] = max(queue[index], queued)
+            active[index] = max(active[index], share)
+            cursor += slice_s
+            remaining -= slice_s
+
+    return {
+        "cpu": [round(min(b / width, 1.0), 4) for b in busy],
+        "queue": queue,
+        "active": active,
+        "bucket_s": round(width, 1),
+    }
+
+
 def resource_payload(cat: Catalog, p: dict, cpu_id: str, volumes=DEFAULT_VOLUMES) -> dict:
     """One fixed hardware build, several alarm volumes.
 
-    Two questions answered together. First, what does a single alarm actually
-    look like in time -- how long until the first token, how long the generation
-    takes at the predicted rate, how long the delivery adds. Second, what load
-    does the box carry as volume grows: the task-manager view.
+    Two questions answered together. First, what does a single alarm look like in
+    time -- how long until the first token, how long generation takes at the
+    predicted rate, how long delivery adds. Second, what load does the box carry
+    as volume grows, and how much concurrency (and therefore memory) that needs.
 
-    The per-alarm timeline is the no-queueing case, so it is the floor. The
-    resource rows come from the full simulated day, where queueing is included.
+    Each volume is solved for the slot count it actually requires, so the memory
+    figure moves with the workload instead of restating the configured setting.
     """
-    from .sizing import evaluate
+    from .simulate import simulate
+    from .sizing import decode_table, evaluate, required_slots
 
     model = cat.model(p["model"]) if p["model"] else cat.models[0]
     quant = cat.quant(p["quant"])
@@ -270,32 +307,46 @@ def resource_payload(cat: Catalog, p: dict, cpu_id: str, volumes=DEFAULT_VOLUMES
 
     rows = []
     for volume in volumes:
-        c = evaluate(model, quant, cpu, memory, eff, replace(base, alarms_per_day=volume), sockets)
+        want = replace(base, alarms_per_day=volume)
+        slots, c = required_slots(model, quant, cpu, memory, eff, want, sockets)
         sim = c.sim_pessimistic or c.sim
         installed = c.memory_gb
-        return_bw = c.throughput.effective_bandwidth_gbs
+        bw = c.throughput.effective_bandwidth_gbs
         rows.append(
             {
                 "alarms": volume,
-                # A task manager's CPU graph: share of the day the box is working.
+                "slots": slots,
+                "slots_configured": base.slots,
+                # A task manager's CPU graph: share of the day spent working.
                 "cpu_pct": round(sim.busy_fraction * 100, 1),
                 "slot_pct": round(sim.slot_utilisation * 100, 1),
                 "ram_used_gb": round(c.ram.subtotal_gb, 1),
                 "ram_installed_gb": installed,
-                "ram_pct": round(min(c.ram.subtotal_gb / installed, 1.0) * 100, 1) if installed else 0,
-                "bandwidth_gbs": round(return_bw, 1),
-                "bandwidth_avg_gbs": round(return_bw * sim.busy_fraction, 1),
+                "ram_pct": round(min(c.ram.subtotal_gb / installed, 1.0) * 100, 1)
+                if installed else 0,
+                "kv_gb": round(c.ram.kv_cache_gb, 2),
+                "bandwidth_gbs": round(bw, 1),
+                "bandwidth_avg_gbs": round(bw * sim.busy_fraction, 1),
+                "bandwidth_pct": round(sim.busy_fraction * 100, 1),
                 "max_queue": sim.max_queue_depth,
                 "p95_steady": round(sim.p95_steady_s, 1),
                 "storm_min": round(sim.storm_drain_s / 60, 1),
                 "verdict": c.verdict,
                 "reasons": c.reasons,
-                # Server-hours of work the day contains, for a sanity read.
                 "work_minutes": round(sim.busy_fraction * 24 * 60, 1),
+                "completed": sim.completed,
             }
         )
 
+    # The graph and the per-alarm timeline describe the configured setting.
     reference = evaluate(model, quant, cpu, memory, eff, base, sockets)
+    _, trace = simulate(
+        base,
+        prefill_tps=reference.throughput.prefill_tps,
+        decode_by_active=decode_table(model, quant, cpu, memory, base, sockets, eff),
+    )
+    series = _buckets(trace.events, 24 * 3600.0)
+
     t = reference.throughput
     lat = reference.latency
     stages = [
@@ -324,6 +375,7 @@ def resource_payload(cat: Catalog, p: dict, cpu_id: str, volumes=DEFAULT_VOLUMES
         },
     ]
 
+    sim_ref = reference.sim_pessimistic or reference.sim
     return {
         "hardware": {
             "id": cpu.id,
@@ -338,8 +390,33 @@ def resource_payload(cat: Catalog, p: dict, cpu_id: str, volumes=DEFAULT_VOLUMES
             "bandwidth_gbs": round(t.effective_bandwidth_gbs, 1),
             "tdp_w": cpu.tdp_w * sockets,
             "ram_installed_gb": reference.memory_gb,
+            "ram_max_gb": cpu.max_mem_gb * sockets,
             "slots": base.slots,
+            "l3_mb": cpu.l3_mb * sockets,
+            "socket": cpu.socket,
+            "passmark": cpu.passmark_multithread,
+            "price_usd": (cpu.price_usd * sockets) if cpu.price_usd else None,
         },
+        "live": {
+            # Headline tiles, matching the reference (configured) run.
+            "cpu_pct": round(sim_ref.busy_fraction * 100, 1),
+            "slot_pct": round(sim_ref.slot_utilisation * 100, 1),
+            "ram_pct": round(
+                min(reference.ram.subtotal_gb / reference.memory_gb, 1.0) * 100, 1
+            ) if reference.memory_gb else 0,
+            "ram_used_gb": round(reference.ram.subtotal_gb, 1),
+            "ram_installed_gb": reference.memory_gb,
+            "bandwidth_avg_gbs": round(
+                t.effective_bandwidth_gbs * sim_ref.busy_fraction, 2
+            ),
+            "bandwidth_gbs": round(t.effective_bandwidth_gbs, 1),
+            "max_queue": sim_ref.max_queue_depth,
+            "peak_active": max((e[1] for e in trace.events), default=0),
+            "alarms": base.alarms_per_day,
+            "completed": sim_ref.completed,
+            "verdict": reference.verdict,
+        },
+        "series": series,
         "timeline": {
             "stages": stages,
             "total_s": round(lat.total_s, 3),
@@ -524,26 +601,45 @@ def serve(
 # --------------------------------------------------------------------------
 
 _GUI_CSS = """
+/* The rail is sticky, so its offset has to equal the header height exactly.
+   Deriving that from content is how the two columns drifted out of line, so the
+   header height is pinned here and both sides read the same variable. */
+:root{--header-h:60px}
 body{min-height:100vh}
 header{
-  display:flex; align-items:baseline; gap:var(--s3);
-  padding:var(--s4) var(--s5); border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:var(--s3);
+  height:var(--header-h); padding:0 var(--s5); box-sizing:border-box;
+  border-bottom:1px solid var(--border);
   background:var(--bg-secondary); position:sticky; top:0; z-index:10;
 }
-header h1{font-size:var(--fs-md)}
+header h1{font-size:var(--fs-md); line-height:1}
 header .tag{font-size:var(--fs-xs); color:var(--text-tertiary)}
 header .spacer{flex:1}
 main{
-  display:grid; grid-template-columns:320px minmax(0,1fr);
-  gap:var(--s5); max-width:1440px; margin:0 auto;
+  display:grid; grid-template-columns:var(--rail-w) minmax(0,1fr);
+  gap:var(--s5); max-width:1680px; margin:0 auto;
   padding:var(--s5) var(--s5) var(--s7);
   align-items:start;
 }
-@media (max-width:960px){
+/* The single-column fallback sits BELOW the app window's minimum width (1100),
+   so in the desktop app the two columns are always side by side. Putting the
+   breakpoint above the window minimum was what made the inputs jump above the
+   results as soon as the window was nudged smaller. */
+:root{--rail-w:340px}
+@media (max-width:1340px){:root{--rail-w:300px}}
+@media (max-width:900px){
   main{grid-template-columns:minmax(0,1fr)}
-  #rail{position:static}
+  #rail{position:static; max-height:none; overflow:visible}
 }
-#rail{position:sticky; top:76px; display:flex; flex-direction:column; gap:var(--s3)}
+#rail{
+  position:sticky; top:calc(var(--header-h) + var(--s5));
+  display:flex; flex-direction:column; gap:var(--s3);
+  /* Own scrollbar: a long form must not be clipped by the viewport, and the
+     results column must not be dragged taller to accommodate it. */
+  max-height:calc(100vh - var(--header-h) - var(--s5) * 2);
+  overflow-y:auto; overscroll-behavior:contain;
+  padding-right:var(--s1);
+}
 fieldset{
   border:1px solid var(--border); border-radius:var(--radius);
   background:var(--bg-secondary); padding:var(--s3) var(--s4) var(--s4); margin:0;
@@ -651,6 +747,66 @@ tbody tr.sel{background:var(--selected-bg);
 .hw{display:flex; flex-wrap:wrap; gap:var(--s2) var(--s4);
   font-size:var(--fs-xs); color:var(--text-secondary); margin-top:var(--s2)}
 .hint-row{font-size:var(--fs-xs); color:var(--text-tertiary); margin-top:var(--s2)}
+
+/* --- Task manager, laid out like Windows' Performance tab: a column of
+   selectable resource tiles on the left, the chosen one graphed large. --- */
+.tm{display:grid; grid-template-columns:186px minmax(0,1fr); gap:var(--s4)}
+@media (max-width:760px){.tm{grid-template-columns:minmax(0,1fr)}}
+.tm-tiles{display:flex; flex-direction:column; gap:var(--s2)}
+.tile{
+  display:grid; grid-template-columns:1fr auto; align-items:center;
+  gap:var(--s1) var(--s2); text-align:left; width:100%;
+  padding:var(--s2) var(--s3); min-height:60px;
+  background:var(--bg-tertiary); border:1px solid var(--border);
+  border-left:3px solid var(--border); border-radius:var(--radius-sm);
+  cursor:pointer; font:inherit; color:inherit;
+}
+.tile:hover{border-color:var(--text-tertiary)}
+.tile[aria-pressed="true"]{
+  background:var(--selected-bg); border-color:var(--selected-border);
+  border-left-color:var(--accent);
+}
+.tile .t-name{font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary)}
+.tile .t-val{font-size:var(--fs-md); font-weight:600; font-variant-numeric:tabular-nums}
+.tile .t-sub{grid-column:1/-1; font-size:10px; color:var(--text-tertiary)}
+.tile svg{grid-column:1/-1; width:100%; height:20px; display:block}
+
+.graph{
+  border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg-tertiary); padding:var(--s3);
+}
+.graph-head{display:flex; align-items:baseline; gap:var(--s3);
+  margin-bottom:var(--s2)}
+.graph-head .g-title{font-size:var(--fs-sm); font-weight:600}
+.graph-head .g-scale{font-size:var(--fs-xs); color:var(--text-tertiary)}
+.graph-head .spacer{flex:1}
+.graph svg{width:100%; height:190px; display:block}
+.graph .axis{font-size:10px; fill:var(--text-tertiary)}
+.axis-x{display:flex; justify-content:space-between;
+  font-size:10px; color:var(--text-tertiary); margin-top:var(--s1)}
+
+.stats{display:grid; gap:var(--s2) var(--s4); margin-top:var(--s3);
+  grid-template-columns:repeat(auto-fit,minmax(112px,1fr))}
+.stat .s-name{font-size:10px; text-transform:uppercase; letter-spacing:.05em;
+  color:var(--text-tertiary)}
+.stat .s-val{font-size:var(--fs-sm); font-weight:600;
+  font-variant-numeric:tabular-nums}
+
+/* Memory composition, the way Task Manager shows it. */
+.compose{display:flex; height:22px; border:1px solid var(--border);
+  border-radius:3px; overflow:hidden; margin-top:var(--s2)}
+.compose div{display:flex; align-items:center; justify-content:center;
+  font-size:10px; font-weight:600; color:var(--on-fill); min-width:1px;
+  white-space:nowrap; overflow:hidden}
+.compose .c-weights{background:var(--accent)}
+.compose .c-kv{background:var(--success)}
+.compose .c-compute{background:var(--warning)}
+.compose .c-os{background:var(--text-secondary)}
+.compose .c-free{background:var(--bg-tertiary); color:var(--text-tertiary)}
+.compose-legend{display:flex; flex-wrap:wrap; gap:var(--s1) var(--s3);
+  margin-top:var(--s2); font-size:10px; color:var(--text-secondary)}
+.compose-legend i{display:inline-block; width:8px; height:8px; border-radius:2px;
+  margin-right:4px; vertical-align:middle}
 """
 
 def app_html(mode: str = "server") -> str:
@@ -1108,33 +1264,253 @@ def app_html(mode: str = "server") -> str:
     return wrap;
   }
 
-  var RES_COLS = [
-    ["개수", function(r){ return r.alarms; }, "num"],
-    ["CPU 사용률", null, ""],
-    ["RAM", null, ""],
-    ["RAM 사용", function(r){ return r.ram_used_gb + " / " + r.ram_installed_gb + " GB"; }, "num"],
-    ["평균 대역폭", function(r){ return r.bandwidth_avg_gbs + " / " + r.bandwidth_gbs + " GB/s"; }, "num"],
-    ["최대 큐", function(r){ return r.max_queue; }, "num"],
-    ["평상시 p95", function(r){ return r.p95_steady + " s"; }, "num"],
-    ["스톰 소진", function(r){ return r.storm_min + " 분"; }, "num"],
-    ["하루 작업시간", function(r){ return r.work_minutes + " 분"; }, "num"]
+  // ---- charts (SVG, no libraries) -----------------------------------
+  var SVGNS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs){
+    var n = document.createElementNS(SVGNS, tag);
+    Object.keys(attrs || {}).forEach(function(k){ n.setAttribute(k, attrs[k]); });
+    return n;
+  }
+  function areaPath(values, max, w, h){
+    if(!values.length) return "";
+    var span = values.length - 1 || 1;
+    var top = max > 0 ? max : 1;
+    var d = "M 0," + h.toFixed(2);
+    values.forEach(function(v, i){
+      var x = (i / span) * w, y = h - Math.min(v / top, 1) * h;
+      d += " L " + x.toFixed(2) + "," + y.toFixed(2);
+    });
+    return d + " L " + w.toFixed(2) + "," + h.toFixed(2) + " Z";
+  }
+  function linePath(values, max, w, h){
+    if(!values.length) return "";
+    var span = values.length - 1 || 1;
+    var top = max > 0 ? max : 1;
+    return values.map(function(v, i){
+      var x = (i / span) * w, y = h - Math.min(v / top, 1) * h;
+      return (i ? "L" : "M") + x.toFixed(2) + "," + y.toFixed(2);
+    }).join(" ");
+  }
+  function sparkline(values, max){
+    var W = 100, H = 20;
+    var svg = svgEl("svg", {viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "none",
+                            "aria-hidden": "true"});
+    svg.appendChild(svgEl("path", {d: areaPath(values, max, W, H),
+                                   fill: "var(--accent)", opacity: "0.22"}));
+    svg.appendChild(svgEl("path", {d: linePath(values, max, W, H), fill: "none",
+                                   stroke: "var(--accent)", "stroke-width": "1"}));
+    return svg;
+  }
+  function bigChart(values, max, unit, label){
+    var W = 600, H = 180, PAD = 26;
+    var svg = svgEl("svg", {viewBox: "0 0 " + W + " " + H,
+                            preserveAspectRatio: "none", role: "img",
+                            "aria-label": label + " 24시간 추이"});
+    var iw = W - PAD, ih = H - 14;
+    // Four gridlines, Task-Manager style, labelled on the left.
+    for(var i = 0; i <= 4; i++){
+      var y = (ih / 4) * i;
+      svg.appendChild(svgEl("line", {x1: PAD, y1: y.toFixed(1), x2: W, y2: y.toFixed(1),
+                                     stroke: "var(--border)", "stroke-width": "1"}));
+      var t = svgEl("text", {x: 0, y: (y + 4).toFixed(1), class: "axis"});
+      t.textContent = fmtNum(max * (1 - i / 4)) + (unit === "%" ? "" : "");
+      svg.appendChild(t);
+    }
+    var g = svgEl("g", {transform: "translate(" + PAD + ",0)"});
+    g.appendChild(svgEl("path", {d: areaPath(values, max, iw, ih),
+                                 fill: "var(--accent)", opacity: "0.20"}));
+    g.appendChild(svgEl("path", {d: linePath(values, max, iw, ih), fill: "none",
+                                 stroke: "var(--accent)", "stroke-width": "1.5"}));
+    svg.appendChild(g);
+    return svg;
+  }
+  function fmtNum(v){
+    if(v >= 100) return String(Math.round(v));
+    if(v >= 10) return v.toFixed(0);
+    if(v >= 1) return v.toFixed(1);
+    return v.toFixed(2);
+  }
+
+  // ---- task manager ------------------------------------------------
+  var tmMetric = "cpu";
+
+  function tmSeries(d, metric){
+    var s = d.series, live = d.live;
+    if(metric === "queue"){
+      return {values: s.queue, max: Math.max(1, Math.max.apply(null, s.queue)),
+              unit: "건", title: "큐 깊이", now: live.max_queue,
+              nowText: live.max_queue + " 건",
+              sub: "대기 중인 알람 (최대)"};
+    }
+    if(metric === "active"){
+      return {values: s.active, max: Math.max(1, Math.max.apply(null, s.active)),
+              unit: "개", title: "동시 처리", now: live.peak_active,
+              nowText: live.peak_active + " / " + d.hardware.slots,
+              sub: "동시에 처리 중인 요청"};
+    }
+    if(metric === "bandwidth"){
+      var bw = s.cpu.map(function(v){ return v * d.hardware.bandwidth_gbs; });
+      return {values: bw, max: d.hardware.bandwidth_gbs, unit: "GB/s",
+              title: "메모리 대역폭", now: live.bandwidth_avg_gbs,
+              nowText: live.bandwidth_avg_gbs + " / " + d.hardware.bandwidth_gbs + " GB/s",
+              sub: "실효 대역폭 대비"};
+    }
+    if(metric === "ram"){
+      // RAM is flat by construction: it is a function of the model and the slot
+      // count, not of when alarms arrive. Drawing it as a line would imply
+      // otherwise, so the tile shows the level and the composition bar below
+      // carries the detail.
+      var flat = s.cpu.map(function(){ return live.ram_used_gb; });
+      return {values: flat, max: live.ram_installed_gb, unit: "GB", title: "메모리",
+              now: live.ram_pct,
+              nowText: live.ram_used_gb + " / " + live.ram_installed_gb + " GB",
+              sub: "모델과 슬롯 수의 함수 · 시간에 따라 변하지 않는다"};
+    }
+    var pct = s.cpu.map(function(v){ return v * 100; });
+    return {values: pct, max: 100, unit: "%", title: "CPU", now: live.cpu_pct,
+            nowText: live.cpu_pct + " %", sub: "일하고 있는 시간의 비율"};
+  }
+
+  var TM_METRICS = [
+    ["cpu", "CPU"], ["ram", "메모리"], ["bandwidth", "대역폭"],
+    ["active", "동시 처리"], ["queue", "큐"]
   ];
 
-  function resourcePanel(d){
+  function taskManager(d){
     var wrap = el("div", "card");
-    wrap.appendChild(el("div", "label", "작업관리자 · 하드웨어 고정, 개수별 리소스"));
+    wrap.appendChild(el("div", "label", "작업관리자 · 성능"));
     var hw = d.hardware;
     wrap.appendChild(el("p", "cpu", hw.label));
     var bits = el("div", "hw");
     [hw.cores + "코어 / " + hw.threads + "스레드 @ " + hw.ghz + "GHz",
      hw.sockets + "소켓", hw.isa.toUpperCase(), hw.memory,
-     hw.bandwidth_gbs + " GB/s", "RAM " + hw.ram_installed_gb + "GB",
-     hw.slots + " 슬롯", hw.tdp_w + "W"].forEach(function(x){
+     hw.bandwidth_gbs + " GB/s", "L3 " + hw.l3_mb + "MB",
+     hw.slots + " 슬롯", hw.tdp_w + "W",
+     "알람 " + d.live.alarms + "개/일"].forEach(function(x){
       bits.appendChild(el("span", "", x));
     });
+    if(hw.passmark) bits.appendChild(el("span", "", "CPU Mark " + hw.passmark.toLocaleString()));
     wrap.appendChild(bits);
 
-    var box = el("div", "scroll"); box.style.marginTop = "12px";
+    var grid = el("div", "tm"); grid.style.marginTop = "16px";
+    var tiles = el("div", "tm-tiles");
+    var pane = el("div");
+
+    function draw(){
+      var m = tmSeries(d, tmMetric);
+      pane.textContent = "";
+      var box = el("div", "graph");
+      var head = el("div", "graph-head");
+      head.appendChild(el("span", "g-title", m.title));
+      head.appendChild(el("span", "spacer"));
+      head.appendChild(el("span", "g-scale",
+        "24시간 · " + (d.series.bucket_s / 60) + "분 단위 · 최대 " +
+        fmtNum(m.max) + " " + m.unit));
+      box.appendChild(head);
+      box.appendChild(bigChart(m.values, m.max, m.unit, m.title));
+      var ax = el("div", "axis-x");
+      ["00:00", "06:00", "12:00", "18:00", "24:00"].forEach(function(t){
+        ax.appendChild(el("span", "", t));
+      });
+      box.appendChild(ax);
+      pane.appendChild(box);
+
+      var stats = el("div", "stats");
+      [["현재", m.nowText], ["슬롯", d.live.peak_active + " / " + hw.slots],
+       ["최대 큐", d.live.max_queue + " 건"],
+       ["평상시 p95", d.rows.length ? d.rows[0].p95_steady + " s" : "-"],
+       ["완료", d.live.completed + " 건"],
+       ["하루 작업시간", (d.live.cpu_pct * 24 * 60 / 100).toFixed(1) + " 분"]
+      ].forEach(function(pair){
+        var st = el("div", "stat");
+        st.appendChild(el("div", "s-name", pair[0]));
+        st.appendChild(el("div", "s-val", pair[1]));
+        stats.appendChild(st);
+      });
+      pane.appendChild(stats);
+      pane.appendChild(el("p", "hint-row", m.sub));
+
+      if(tmMetric === "ram") pane.appendChild(composition(d));
+    }
+
+    TM_METRICS.forEach(function(pair){
+      var key = pair[0];
+      var m = tmSeries(d, key);
+      var tile = el("button", "tile");
+      tile.type = "button";
+      tile.setAttribute("aria-pressed", String(key === tmMetric));
+      tile.appendChild(el("div", "t-name", pair[1]));
+      tile.appendChild(el("div", "t-val",
+        key === "cpu" || key === "ram" ? fmtNum(m.now) + "%" : fmtNum(m.now)));
+      tile.appendChild(sparkline(m.values, m.max));
+      tile.appendChild(el("div", "t-sub", m.nowText));
+      tile.addEventListener("click", function(){
+        tmMetric = key;
+        Array.prototype.forEach.call(tiles.children, function(t, i){
+          t.setAttribute("aria-pressed", String(TM_METRICS[i][0] === tmMetric));
+        });
+        draw();
+      });
+      tiles.appendChild(tile);
+    });
+
+    grid.appendChild(tiles);
+    grid.appendChild(pane);
+    wrap.appendChild(grid);
+    draw();
+    return wrap;
+  }
+
+  function composition(d){
+    var b = d.ram_breakdown, box = el("div");
+    box.appendChild(el("div", "s-name", "메모리 구성"));
+    var bar = el("div", "compose");
+    var total = b.installed_gb || b.subtotal_gb;
+    var parts = [["c-weights", "가중치", b.weights_gb], ["c-kv", "KV", b.kv_gb],
+                 ["c-compute", "컴퓨트", b.compute_gb], ["c-os", "OS", b.os_gb],
+                 ["c-free", "여유", Math.max(0, total - b.subtotal_gb)]];
+    parts.forEach(function(part){
+      var seg = el("div", part[0]);
+      seg.style.width = (100 * part[2] / total) + "%";
+      seg.title = part[1] + " " + part[2].toFixed(2) + " GiB";
+      if(part[2] / total > 0.12) seg.textContent = part[2].toFixed(1);
+      bar.appendChild(seg);
+    });
+    box.appendChild(bar);
+    var legend = el("div", "compose-legend");
+    parts.forEach(function(part){
+      var item = el("span");
+      var swatch = el("i");
+      swatch.style.background = "var(--" + ({
+        "c-weights": "accent", "c-kv": "success", "c-compute": "warning",
+        "c-os": "text-secondary", "c-free": "border"}[part[0]]) + ")";
+      item.appendChild(swatch);
+      item.appendChild(document.createTextNode(part[1] + " " + part[2].toFixed(2) + " GiB"));
+      legend.appendChild(item);
+    });
+    box.appendChild(legend);
+    box.appendChild(el("p", "hint-row",
+      "RAM은 모델 크기와 동시 슬롯 수의 함수다. 알람 개수는 더 많은 슬롯이 필요해질 때만 " +
+      "RAM을 끌어올린다 — 아래 표의 슬롯 열과 함께 보면 된다."));
+    return box;
+  }
+
+  var RES_COLS = [
+    ["개수", function(r){ return r.alarms; }, "num"],
+    ["필요 슬롯", function(r){ return r.slots; }, "num"],
+    ["CPU 사용률", null, ""],
+    ["RAM", null, ""],
+    ["RAM 사용", function(r){ return r.ram_used_gb + " / " + r.ram_installed_gb + " GB"; }, "num"],
+    ["KV", function(r){ return r.kv_gb + " GiB"; }, "num"],
+    ["평균 대역폭", function(r){ return r.bandwidth_avg_gbs + " / " + r.bandwidth_gbs; }, "num"],
+    ["최대 큐", function(r){ return r.max_queue; }, "num"],
+    ["평상시 p95", function(r){ return r.p95_steady + " s"; }, "num"],
+    ["스톰 소진", function(r){ return r.storm_min + " 분"; }, "num"],
+    ["작업시간", function(r){ return r.work_minutes + " 분"; }, "num"]
+  ];
+
+  function resourceTable(d){
+    var box = el("div", "scroll");
     var tbl = el("table"), thead = el("thead"), htr = el("tr");
     RES_COLS.forEach(function(c){ htr.appendChild(el("th", c[2], c[0])); });
     htr.appendChild(el("th", "", "판정"));
@@ -1146,7 +1522,7 @@ def app_html(mode: str = "server") -> str:
       RES_COLS.forEach(function(c, i){
         if(c[1]){ tr.appendChild(el("td", c[2], c[1](r))); return; }
         var td = el("td", c[2]);
-        td.appendChild(i === 1 ? meter(r.cpu_pct, r.cpu_pct.toFixed(1) + "%")
+        td.appendChild(i === 2 ? meter(r.cpu_pct, r.cpu_pct.toFixed(1) + "%")
                                : meter(r.ram_pct, r.ram_pct.toFixed(0) + "%"));
         tr.appendChild(td);
       });
@@ -1156,16 +1532,13 @@ def app_html(mode: str = "server") -> str:
       tbody.appendChild(tr);
     });
     tbl.appendChild(tbody); box.appendChild(tbl);
-    wrap.appendChild(box);
 
-    var b = d.ram_breakdown;
+    var wrap = el("div");
+    wrap.appendChild(box);
     wrap.appendChild(el("p", "hint-row",
-      "RAM 내역: 가중치 " + b.weights_gb + " + KV " + b.kv_gb + " + 컴퓨트 " +
-      b.compute_gb + " + OS·런타임 " + b.os_gb + " = " + b.subtotal_gb +
-      " GiB → 장착 권장 " + b.installed_gb + " GB"));
-    wrap.appendChild(el("p", "hint-row",
-      "CPU 사용률은 하루 중 서버가 실제로 일한 시간의 비율이다. " +
-      "llama.cpp는 요청이 있으면 모든 스레드를 점유하므로 유휴가 아니면 사실상 포화 상태다."));
+      "각 개수마다 SLA를 지키는 데 필요한 최소 슬롯을 따로 풀어서 낸 값이다. " +
+      "슬롯을 늘려도 개선이 멈추면 그 지점에서 멈춘다 — 총 처리량이 연산이나 대역폭에 " +
+      "걸린 것이고, 그때는 동시성이 아니라 더 빠른 CPU가 답이다."));
     return wrap;
   }
 
@@ -1183,7 +1556,9 @@ def app_html(mode: str = "server") -> str:
       }
       host.appendChild(section("토큰 전달 시뮬레이터", d.hardware.label,
                                timelinePanel(d.timeline)));
-      host.appendChild(section("리소스 사용량", "개수별", resourcePanel(d)));
+      host.appendChild(section("작업관리자", d.hardware.label, taskManager(d)));
+      host.appendChild(section("개수별 리소스", d.rows.length + "개 구간",
+                               resourceTable(d)));
     });
   }
 

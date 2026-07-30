@@ -169,6 +169,66 @@ def _judge(
 # --------------------------------------------------------------------------
 
 
+#: Ceiling for the slot search. Past this, KV cache dominates RAM and the answer
+#: is a bigger box rather than more concurrency.
+MAX_SEARCHED_SLOTS = 32
+
+
+def required_slots(
+    model: ModelSpec,
+    quant: QuantSpec,
+    cpu: CpuSpec,
+    memory: MemoryOption,
+    eff: Efficiency,
+    workload: Workload,
+    sockets: int = 1,
+    ceiling: int = MAX_SEARCHED_SLOTS,
+) -> tuple[int, Candidate]:
+    """Fewest concurrent slots that hold the SLA, and the build at that setting.
+
+    This is what makes memory move with load. RAM is a function of the model and
+    the slot count -- not of alarm volume -- so quoting RAM against a fixed slot
+    count produces the same number at 100 alarms and at 3000, which is useless
+    for planning. Solving for the concurrency the volume actually needs lets the
+    KV cache, and therefore the RAM figure, follow the workload.
+
+    Returns the first passing slot count. If nothing passes inside `ceiling`, the
+    best attempt is returned so the caller can show why it fails rather than
+    showing nothing.
+    """
+    start = max(1, min(workload.slots, ceiling))
+    best_count, best = start, None
+    previous: float | None = None
+
+    # Start from the configured concurrency: below it the operator has already
+    # said they do not want to go.
+    for count in range(start, ceiling + 1):
+        candidate = evaluate(
+            model, quant, cpu, memory, eff, replace(workload, slots=count), sockets
+        )
+        if best is None:
+            best_count, best = count, candidate
+        if candidate.verdict in (PASS, MARGINAL):
+            return count, candidate
+        # More slots cannot help once RAM is the blocker.
+        if any("RAM" in reason for reason in candidate.reasons):
+            return best_count, best
+
+        sim = candidate.sim_pessimistic or candidate.sim
+        # Score on what the verdict actually turns on. Lower is better.
+        score = max(sim.p95_steady_s, sim.storm_drain_s / 60.0)
+        if previous is not None and score > previous * 0.98:
+            # Concurrency has stopped buying anything -- aggregate throughput is
+            # capped by compute or bandwidth, not by how many requests are in
+            # flight. Reporting the ceiling here would imply 32 slots help when
+            # they do not; report the last count that did.
+            return best_count, best
+        previous, best_count, best = score, count, candidate
+
+    assert best is not None
+    return best_count, best
+
+
 def cost_proxy(candidate: Candidate) -> tuple:
     """Ordering key standing in for money, cheapest first.
 

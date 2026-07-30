@@ -78,7 +78,7 @@ setup(
             icon=str(ICON),
             shortcut_name="svrspec",
             shortcut_dir="ProgramMenuFolder",
-            copyright="svrspec",
+            copyright="Copyright (c) 2026 rokaproj",
         ),
         Executable(
             str(ROOT / "installer" / "cli_entry.py"),

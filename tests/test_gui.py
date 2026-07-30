@@ -149,10 +149,19 @@ def test_unknown_model_raises_for_the_handler_to_report(cat):
 # --------------------------------------------------------------------------
 
 
+SVG_NAMESPACE = "http://www.w3.org/2000/svg"
+
+
 def test_page_is_self_contained():
-    """No CDN, no external font, no remote image -- it has to work air-gapped."""
-    for forbidden in ("http://", "https://cdn", "<script src", "@import", "//unpkg"):
-        assert forbidden not in SERVER_HTML
+    """No CDN, no external font, no remote image -- it has to work air-gapped.
+
+    The SVG namespace URI is exempt: it is an XML identifier that browsers match
+    as a string and never dereference. Every other absolute URL in the page
+    would be a request, which an air-gapped install cannot make.
+    """
+    body = SERVER_HTML.replace(SVG_NAMESPACE, "")
+    for forbidden in ("http://", "https://", "<script src", "@import", "//unpkg"):
+        assert forbidden not in body, forbidden
 
 
 def test_every_control_has_a_label():
@@ -447,3 +456,152 @@ def test_busy_fraction_is_reported_and_bounded():
     # Busy fraction counts wall clock with any request in flight, so it is never
     # below the per-slot utilisation.
     assert loaded.busy_fraction >= loaded.slot_utilisation - 1e-9
+
+
+# --------------------------------------------------------------------------
+# Slot solving, time series, and the task-manager payload
+# --------------------------------------------------------------------------
+
+
+def test_required_slots_stops_when_concurrency_stops_helping(catalog, eff):
+    """Aggregate throughput is capped by compute or bandwidth, not by slots.
+
+    Past that cap another slot changes nothing, and reporting the search ceiling
+    would tell the operator to buy concurrency that cannot help.
+    """
+    from svrspec.sizing import MAX_SEARCHED_SLOTS, required_slots
+    from svrspec.types import Workload
+
+    cpu = catalog.cpu("test-desktop-2ch")
+    model = catalog.model("test-8b-gqa")
+    w = Workload(alarms_per_day=150, slots=1, sla_seconds=1.0, storm_drain_sla_s=1.0)
+    slots, candidate = required_slots(
+        model, catalog.quant("Q4_K_M"), cpu, catalog.memory_for(cpu), eff, w
+    )
+    assert candidate.verdict == "fail"          # an impossible SLA cannot pass
+    assert slots < MAX_SEARCHED_SLOTS           # ...but it must not claim 32 helps
+
+
+def test_required_slots_returns_the_first_passing_count(catalog, eff):
+    from svrspec.sizing import required_slots
+    from svrspec.types import Workload
+
+    cpu = catalog.cpu("test-amx-8ch")
+    w = Workload(alarms_per_day=150, slots=1, sla_seconds=60.0, storm_drain_sla_s=3600.0)
+    slots, candidate = required_slots(
+        catalog.model("test-3b"), catalog.quant("Q4_K_M"), cpu,
+        catalog.memory_for(cpu), eff, w,
+    )
+    assert candidate.verdict in ("pass", "marginal")
+    assert slots >= 1
+
+
+def test_resource_rows_report_the_slots_they_solved_for(cat):
+    from svrspec.gui import resource_payload
+
+    d = resource_payload(cat, _params({**BASE_REQUEST, "slots": 1}),
+                         "test-amx-8ch", (100, 3000))
+    for r in d["rows"]:
+        assert r["slots"] >= 1
+        assert r["slots_configured"] == 1
+        # KV cache follows the slot count, which is how RAM moves with load.
+        assert r["kv_gb"] > 0
+
+
+def test_memory_moves_with_the_slot_count(catalog, eff):
+    """The complaint this fixes: RAM that never changes is useless for planning."""
+    from svrspec.memory import size_memory
+    from svrspec.types import TokenProfile
+
+    model, quant = catalog.model("test-8b-gqa"), catalog.quant("Q4_K_M")
+    one = size_memory(model, quant, TokenProfile(), slots=1)
+    eight = size_memory(model, quant, TokenProfile(), slots=8)
+    assert eight.kv_cache_gb == 8 * one.kv_cache_gb
+    assert eight.subtotal_gb > one.subtotal_gb
+
+
+def test_series_has_a_bucket_per_quarter_hour(cat):
+    from svrspec.gui import resource_payload
+
+    s = resource_payload(cat, _params(BASE_REQUEST), "test-amx-8ch")["series"]
+    assert len(s["cpu"]) == 96
+    assert len(s["queue"]) == 96 and len(s["active"]) == 96
+    assert s["bucket_s"] == 900.0
+    assert all(0.0 <= v <= 1.0 for v in s["cpu"])
+
+
+def test_series_shows_the_storms_as_spikes(cat):
+    """A thirty-second burst must survive bucketing, or the graph lies."""
+    from svrspec.gui import resource_payload
+
+    d = resource_payload(cat, _params({**BASE_REQUEST, "storms_per_day": 2}),
+                         "test-desktop-2ch")
+    busy = [v for v in d["series"]["cpu"] if v > 0]
+    assert busy, "the day cannot be entirely idle"
+    assert max(d["series"]["queue"]) > 0     # queueing happened somewhere
+    assert max(d["series"]["active"]) >= 1
+
+
+def test_buckets_conserve_busy_time(cat):
+    """Every event's span must land in exactly one bucket's worth of time."""
+    from svrspec.gui import _buckets
+
+    events = [(0.0, 1, 0, 100.0), (500.0, 2, 3, 1000.0), (86000.0, 1, 0, 400.0)]
+    span = 86400.0
+    b = _buckets(events, span, count=96)
+    width = span / 96
+    charged = sum(v * width for v in b["cpu"])
+    assert abs(charged - sum(e[3] for e in events)) < 1.0
+
+
+def test_live_tiles_carry_what_the_task_manager_shows(cat):
+    from svrspec.gui import resource_payload
+
+    live = resource_payload(cat, _params(BASE_REQUEST), "test-amx-8ch")["live"]
+    for key in ("cpu_pct", "ram_pct", "ram_used_gb", "ram_installed_gb",
+                "bandwidth_avg_gbs", "bandwidth_gbs", "max_queue", "peak_active",
+                "alarms", "completed", "verdict"):
+        assert key in live
+    assert 0 <= live["cpu_pct"] <= 100
+    assert live["bandwidth_avg_gbs"] <= live["bandwidth_gbs"] + 0.1
+
+
+def test_hardware_block_carries_the_identity_fields(cat):
+    from svrspec.gui import resource_payload
+
+    hw = resource_payload(cat, _params(BASE_REQUEST), "test-amx-8ch")["hardware"]
+    for key in ("label", "cores", "threads", "ghz", "isa", "memory",
+                "bandwidth_gbs", "l3_mb", "ram_max_gb", "slots"):
+        assert key in hw
+
+
+def test_two_columns_survive_the_smallest_window():
+    """The rail must never jump above the results in the app window.
+
+    The single-column fallback has to sit below the window's minimum width;
+    when it sat above, nudging the window smaller broke the side-by-side layout,
+    which is what "the columns do not match" was describing.
+    """
+    import re
+
+    from svrspec.desktop import MIN_SIZE
+
+    match = re.search(
+        r"@media \(max-width:(\d+)px\)\{\s*main\{grid-template-columns:minmax",
+        DESKTOP_HTML,
+    )
+    assert match, "the single-column breakpoint is missing"
+    assert MIN_SIZE[0] > int(match.group(1))
+
+
+def test_the_sticky_rail_offset_equals_the_header_height():
+    """A hand-tuned offset is how the two columns drifted apart; both read one var."""
+    assert "--header-h:60px" in SERVER_HTML
+    assert "height:var(--header-h)" in SERVER_HTML
+    assert "top:calc(var(--header-h) + var(--s5))" in SERVER_HTML
+
+
+def test_the_rail_scrolls_on_its_own():
+    """A long form must not stretch the results column or get clipped."""
+    assert "max-height:calc(100vh - var(--header-h)" in SERVER_HTML
+    assert "overflow-y:auto" in SERVER_HTML

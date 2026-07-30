@@ -57,6 +57,11 @@ class SimTrace:
     storm_latencies: list[float] = field(default_factory=list)
     steady_latencies: list[float] = field(default_factory=list)
     queue_samples: list[int] = field(default_factory=list)
+    #: (time, active requests, queued requests) at every event boundary, plus
+    #: the span each state held for. A task-manager graph needs the shape of the
+    #: day, not just its summary statistics -- and because rates are piecewise
+    #: constant between events, these samples describe it exactly.
+    events: list[tuple[float, int, int, float]] = field(default_factory=list)
 
 
 def simulate(
@@ -158,6 +163,7 @@ def simulate(
 
         busy_slot_seconds += share * step
         any_busy_seconds += step
+        trace.events.append((now, share, len(queue), step))
         now += step
 
         still_active: list[_Request] = []

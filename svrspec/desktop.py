@@ -30,8 +30,10 @@ from .perf import Efficiency
 from .sizing import sweep_cpus, tiers
 
 WINDOW_TITLE = "svrspec — GPU 서빙 서버 스펙 산정"
-MIN_SIZE = (1024, 720)
-DEFAULT_SIZE = (1440, 940)
+#: Kept above the stylesheet's single-column breakpoint (900px) so the input
+#: rail and the results always sit side by side in the app window.
+MIN_SIZE = (1100, 760)
+DEFAULT_SIZE = (1600, 1000)
 
 
 class Api:
