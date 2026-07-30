@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Belt and braces: the code forces UTF-8 itself, but a runner whose console
+  # code page is cp1252 should never be what decides whether a build passes.
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 jobs:
   test:
     # The engine is standard-library only, so it must pass on both platforms.

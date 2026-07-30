@@ -27,7 +27,33 @@ from .sizing import evaluate, sweep_cpus, sweep_models, tiers
 from .types import TokenProfile, Workload
 
 
+def _force_utf8() -> None:
+    """Make Korean output survive a Windows console.
+
+    On Windows, stdout defaults to the system ANSI code page (cp949 on a Korean
+    install, cp1252 in CI), so printing any Korean label raises
+    UnicodeEncodeError. Frozen builds do not inherit PYTHONUTF8 either. Every
+    entry point goes through main(), so this belongs here rather than in the
+    packaging shims.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            # 65001 = CP_UTF8, so a real console renders what we emit.
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception:
+            pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "handler", None):

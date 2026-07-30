@@ -178,3 +178,36 @@ def test_catalog_validate_reports_the_audit(capsys):
     assert run(["catalog", "validate"]) == 0
     out = capsys.readouterr().out
     assert "PassMark 교차검증" in out
+
+
+def test_cli_survives_a_non_utf8_stdout(capsysbinary, monkeypatch):
+    """Korean output must not crash a Windows console.
+
+    The bundle command prints "N개 파일"; on a cp1252/cp949 stdout that raised
+    UnicodeEncodeError and killed the release build. main() now forces UTF-8, so
+    a stream that cannot represent Korean must still not take the process down.
+    """
+    import io
+    import sys
+
+    buffer = io.BytesIO()
+    narrow = io.TextIOWrapper(buffer, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", narrow)
+
+    assert run(["list", "quants"]) == 0
+    narrow.flush()
+    # reconfigure() switched it to UTF-8, so the Korean header is really there.
+    assert "품질".encode() in buffer.getvalue()
+
+
+def test_bundle_prints_without_encoding_errors(tmp_path, monkeypatch):
+    import io
+    import sys
+
+    buffer = io.BytesIO()
+    narrow = io.TextIOWrapper(buffer, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", narrow)
+
+    assert run(["bundle", "--out", str(tmp_path / "b.zip")]) == 0
+    narrow.flush()
+    assert "개 파일".encode() in buffer.getvalue()
