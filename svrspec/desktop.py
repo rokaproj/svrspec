@@ -70,6 +70,26 @@ class Api:
         except (CatalogError, ValueError, TypeError) as exc:
             return {"error": str(exc)}
 
+    def capacity(self, params: dict | str) -> dict:
+        """Where this build breaks, on each load axis.
+
+        Deliberately not part of the live recompute: a four-axis knee search
+        simulates whole days at loads far above the configured one and takes
+        seconds, where every other call here is milliseconds. The page runs it
+        from a button and caches the result until the inputs change.
+        """
+        raw = json.loads(params) if isinstance(params, str) else (params or {})
+        if not isinstance(raw, dict):
+            return {"error": "expected an object of parameters"}
+        try:
+            from .gui import _axes, capacity_payload
+
+            return capacity_payload(
+                self._catalog, _params(raw), str(raw.get("cpu", "")), _axes(raw)
+            )
+        except (CatalogError, ValueError, TypeError) as exc:
+            return {"error": str(exc)}
+
     def update_check(self) -> dict:
         from .gui import update_payload
 

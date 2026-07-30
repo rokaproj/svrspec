@@ -49,6 +49,37 @@ class _Request:
         return self.finished_s - self.arrived_s
 
 
+@dataclass(frozen=True)
+class SimSegment:
+    """One interval over which every rate in the system was constant.
+
+    The event loop already advances to the next state change, so a segment is
+    exactly a span of unchanging behaviour: the same requests in the same
+    phases at the same rates. That makes these samples an exact description of
+    the day rather than a sampling of it -- nothing happens between them.
+
+    Phase is resolved because the two phases load completely different parts of
+    the machine. Prefill is a GEMM and saturates the vector units while barely
+    touching DRAM; decode streams the whole weight set per token and saturates
+    DRAM while the vector units idle. A resource graph that does not separate
+    them cannot show either one.
+    """
+
+    t_s: float
+    span_s: float
+    active: int
+    queued: int
+    prefilling: int
+    decoding: int
+    #: Tokens actually processed inside this segment, by phase.
+    prefill_tokens: float
+    decode_tokens: float
+    #: Sum over active requests of the context length each is holding in KV at
+    #: the start of the segment. This is what makes the memory graph move: KV
+    #: residency is a function of who is in flight and how far along they are.
+    kv_tokens: float
+
+
 @dataclass
 class SimTrace:
     """Per-request detail, kept so reports can show the worst offenders."""
@@ -57,11 +88,18 @@ class SimTrace:
     storm_latencies: list[float] = field(default_factory=list)
     steady_latencies: list[float] = field(default_factory=list)
     queue_samples: list[int] = field(default_factory=list)
-    #: (time, active requests, queued requests) at every event boundary, plus
-    #: the span each state held for. A task-manager graph needs the shape of the
-    #: day, not just its summary statistics -- and because rates are piecewise
-    #: constant between events, these samples describe it exactly.
-    events: list[tuple[float, int, int, float]] = field(default_factory=list)
+    #: Every interval of constant behaviour, in order. See `SimSegment`.
+    segments: list[SimSegment] = field(default_factory=list)
+    #: When each alarm arrived, and when it was delivered to Teams. Kept so a
+    #: graph can show offered load against completed load instead of inferring
+    #: one from the other.
+    arrivals_at: list[float] = field(default_factory=list)
+    completions_at: list[float] = field(default_factory=list)
+
+    @property
+    def events(self) -> list[tuple[float, int, int, float]]:
+        """(time, active, queued, span) view, for consumers that only graph load."""
+        return [(s.t_s, s.active, s.queued, s.span_s) for s in self.segments]
 
 
 def simulate(
@@ -132,6 +170,8 @@ def simulate(
         decode_aggregate = _decode_rate(decode_by_active, share)
         prefill_rate = prefill_tps / share
         decode_rate = decode_aggregate / share
+        prefilling = sum(1 for r in active if r.phase == PREFILL)
+        kv_tokens = sum(_kv_tokens(r, tokens) for r in active)
 
         # Time for each active request to finish its current phase.
         horizons: list[float] = []
@@ -163,7 +203,19 @@ def simulate(
 
         busy_slot_seconds += share * step
         any_busy_seconds += step
-        trace.events.append((now, share, len(queue), step))
+        trace.segments.append(
+            SimSegment(
+                t_s=now,
+                span_s=step,
+                active=share,
+                queued=len(queue),
+                prefilling=prefilling,
+                decoding=share - prefilling,
+                prefill_tokens=prefilling * prefill_rate * step,
+                decode_tokens=(share - prefilling) * decode_rate * step,
+                kv_tokens=kv_tokens,
+            )
+        )
         now += step
 
         still_active: list[_Request] = []
@@ -177,12 +229,15 @@ def simulate(
                 still_active.append(req)
         active = still_active
 
+    trace.arrivals_at = [a.at_s for a in incoming]
     for req in finished:
         trace.latencies.append(req.latency_s)
+        trace.completions_at.append(req.finished_s or 0.0)
         if req.storm_id is not None:
             trace.storm_latencies.append(req.latency_s)
         else:
             trace.steady_latencies.append(req.latency_s)
+    trace.completions_at.sort()
 
     span = max(now - first_event_s, 1e-9)
     result = _summarise(
@@ -194,6 +249,21 @@ def simulate(
         busy_fraction=any_busy_seconds / span,
     )
     return result, trace
+
+
+def _kv_tokens(req: _Request, tokens: TokenProfile) -> float:
+    """Context length this request currently holds in the KV cache.
+
+    During prefill the cache fills as the prompt is processed -- with a cached
+    prefix, the shared part is already resident before the request starts. Once
+    generation begins the whole prompt is in, and every emitted token adds one
+    more position.
+    """
+    if req.phase == PREFILL:
+        done = tokens.billed_prefill_tokens - req.remaining_prefill
+        return tokens.cached_prefix_tokens + max(done, 0.0)
+    generated = tokens.output_tokens - max(req.remaining_decode, 0.0)
+    return tokens.prefill_tokens + max(generated, 0.0)
 
 
 def _decode_rate(table: dict[int, float], active: int) -> float:

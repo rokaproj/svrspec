@@ -108,17 +108,147 @@ def test_coefficients_are_listed_with_their_confidence(capsys):
     assert "추정" in out and "실측" in out
 
 
-def test_nothing_in_the_cli_loads_the_local_cpu():
-    """The simulator is analytical. Nothing in the CLI runs a model.
+def test_nothing_in_the_package_can_run_a_benchmark():
+    """The simulator is analytical. Nothing here launches a process.
 
-    Guard against a benchmark path creeping back in: sizing a customer's server
-    must never depend on flogging whatever machine this happens to run on.
+    Sizing a customer's server must never depend on flogging whatever machine
+    this happens to run on -- the server being sized is somewhere else, so a
+    local benchmark answers a different question.
+
+    The original guard forbade the *string* "llama-bench" in cli.py. That was a
+    proxy for "no benchmark runner", and it stopped working the moment
+    `calibrate` had to name the tool whose log it reads. So the guard now
+    checks what actually matters -- the ability to spawn a process -- and
+    checks it across the whole package rather than one file.
+
+    `desktop.py` and `gui.py` are exempt: launching a browser or a native
+    window is what they are for.
     """
-    import svrspec.cli as cli_module
+    import svrspec
 
-    source = Path(cli_module.__file__).read_text(encoding="utf-8")
-    for forbidden in ("llama-bench", "llama_bench", "subprocess"):
-        assert forbidden not in source
+    package = Path(svrspec.__file__).parent
+    exempt = {"desktop.py", "gui.py", "update.py"}
+    execution = ("subprocess", "os.system", "os.popen", "os.spawn",
+                 "Popen", "pty.spawn", "multiprocessing")
+
+    checked = 0
+    for path in sorted(package.rglob("*.py")):
+        if path.name in exempt:
+            continue
+        source = path.read_text(encoding="utf-8")
+        for forbidden in execution:
+            assert forbidden not in source, f"{path.name} can spawn: {forbidden}"
+        checked += 1
+    assert checked > 8, "the sweep must actually be reaching the modules"
+
+
+def test_timeline_shows_resources_moving_over_the_day(capsys):
+    """The headline fix: CPU, bandwidth, compute and KV are separate series."""
+    assert run([
+        "timeline", "--model", "test-8b-gqa", "--cpu", "test-amx-8ch",
+        "--alarms-per-day", "300", "--alarm-tokens", "1200",
+    ]) == 0
+    out = capsys.readouterr().out
+    for section in ("하루 리소스 시계열", "병목 진단", "가장 바쁜 구간"):
+        assert section in out
+    for series in ("CPU 가동", "대역폭 평균", "연산 평균", "KV 실사용", "큐 깊이"):
+        assert series in out
+    # The distinction the whole module exists to make.
+    assert "평균" in out and "피크" in out
+
+
+def test_timeline_bucket_count_is_honoured(capsys):
+    assert run([
+        "timeline", "--model", "test-3b", "--cpu", "test-amx-8ch", "--buckets", "24",
+    ]) == 0
+    assert "60분 x 24버킷" in capsys.readouterr().out
+
+
+def test_timeline_writes_a_csv_with_every_series(tmp_path, capsys):
+    csv_path = tmp_path / "t.csv"
+    assert run([
+        "timeline", "--model", "test-3b", "--cpu", "test-amx-8ch",
+        "--buckets", "12", "--csv", str(csv_path),
+    ]) == 0
+    capsys.readouterr()
+
+    body = csv_path.read_text(encoding="utf-8-sig")
+    header = body.splitlines()[0]
+    for column in ("cpu_pct", "bandwidth_avg_pct", "compute_avg_pct", "kv_used_gb",
+                   "ram_used_gb", "queued", "arrived", "completed"):
+        assert column in header
+    assert len(body.strip().splitlines()) == 13  # header + 12 buckets
+
+
+def test_timeline_pessimistic_differs_from_nominal(capsys):
+    """The derated run is a different machine and must not print the same day."""
+    run(["timeline", "--model", "test-8b-gqa", "--cpu", "test-amx-8ch",
+         "--alarms-per-day", "300"])
+    nominal = capsys.readouterr().out
+    run(["timeline", "--model", "test-8b-gqa", "--cpu", "test-amx-8ch",
+         "--alarms-per-day", "300", "--pessimistic"])
+    pessimistic = capsys.readouterr().out
+    assert "명목 예측 기준" in nominal
+    assert "불리한 추정 기준" in pessimistic
+    assert nominal != pessimistic
+
+
+def test_capacity_reports_a_knee_and_what_broke(capsys):
+    assert run([
+        "capacity", "--model", "test-8b-gqa", "--cpu", "test-amx-8ch",
+        "--axis", "storm", "--alarms-per-day", "150",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "과부하 지점" in out
+    assert "무릎" in out
+    assert "한계 요인" in out
+    # Either it found a breaking point or it said it could not.
+    assert "가장 먼저 무너지는 축" in out or "무너지는 축이 없다" in out
+
+
+def test_capacity_curve_lists_every_probe(capsys):
+    assert run([
+        "capacity", "--model", "test-8b-gqa", "--cpu", "test-amx-8ch",
+        "--axis", "prompt", "--curve",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "탐색 경로" in out
+    assert "평상시 p95" in out
+
+
+def test_capacity_writes_a_csv(tmp_path, capsys):
+    csv_path = tmp_path / "c.csv"
+    assert run([
+        "capacity", "--model", "test-3b", "--cpu", "test-amx-8ch",
+        "--axis", "storm", "--csv", str(csv_path),
+    ]) == 0
+    capsys.readouterr()
+
+    body = csv_path.read_text(encoding="utf-8-sig")
+    assert "axis,value,verdict" in body.splitlines()[0]
+    assert len(body.strip().splitlines()) > 1
+
+
+def test_hangul_labels_are_measured_in_terminal_columns():
+    """Korean labels are double-width; len() would misalign every column."""
+    from svrspec.cli import _display_width
+
+    # "CPU" + space = 4 cells, "가동" = 2 double-width chars = 4 cells.
+    assert _display_width("CPU 가동") == 8
+    assert len("CPU 가동") == 6, "len() undercounts, which is the bug"
+    assert _display_width("abc") == 3
+
+
+def test_sparkline_scales_to_its_own_series():
+    from svrspec.cli import SPARK, _sparkline
+
+    assert _sparkline([]) == ""
+    # An all-zero series must not divide by zero, and must draw as empty.
+    assert _sparkline([0.0, 0.0, 0.0]) == SPARK[0] * 3
+    drawn = _sparkline([0.0, 50.0, 100.0])
+    assert drawn[0] == SPARK[0] and drawn[-1] == SPARK[-1]
+    # Against an explicit ceiling the same series reads lower.
+    assert _sparkline([0.0, 50.0, 100.0], ceiling=1000.0)[-1] != SPARK[-1]
 
 
 def test_bundle_is_self_contained(tmp_path, capsys):
@@ -211,3 +341,136 @@ def test_bundle_prints_without_encoding_errors(tmp_path, monkeypatch):
     assert run(["bundle", "--out", str(tmp_path / "b.zip")]) == 0
     narrow.flush()
     assert "개 파일".encode() in buffer.getvalue()
+
+
+MEASURED = Path(__file__).parent / "data" / "measured"
+
+
+def test_calibrate_reads_a_log_and_derives_coefficients(capsys):
+    """The path that turns an estimate into a measurement."""
+    assert run([
+        "calibrate", str(MEASURED / "llama-bench-devbox.md"),
+        "--cpu", "test-desktop-2ch", "--model", "test-8b-gqa",
+    ]) == 0
+    out = capsys.readouterr().out
+    for section in ("읽은 측정값", "예측 대조", "유도한 계수"):
+        assert section in out
+    assert "근거 수준" in out
+
+
+def test_calibrate_writes_a_catalog_shaped_file(tmp_path, capsys):
+    out_path = tmp_path / "coef.json"
+    assert run([
+        "calibrate", str(MEASURED / "llama-bench-devbox.md"),
+        "--cpu", "test-desktop-2ch", "--model", "test-8b-gqa",
+        "--out", str(out_path),
+    ]) == 0
+    capsys.readouterr()
+
+    import json
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["schema"] == "coefficients/v1"
+    assert payload["entries"]
+    for entry in payload["entries"]:
+        assert entry["source"] == "measurement"
+        # The loader refuses a non-unverified row without a source_url.
+        assert entry["source_url"]
+        assert entry["confidence"] in ("measured", "derived")
+
+
+def test_calibrate_never_rewrites_the_shipped_catalogue(tmp_path, capsys):
+    """One log is one machine on one day. Promotion is the operator's call."""
+    shipped = Path("svrspec/catalog/coefficients.json")
+    before = shipped.read_bytes()
+    assert run([
+        "calibrate", str(MEASURED / "llama-bench-devbox.md"),
+        "--cpu", "test-desktop-2ch", "--model", "test-8b-gqa",
+        "--out", str(tmp_path / "c.json"),
+    ]) == 0
+    capsys.readouterr()
+    assert shipped.read_bytes() == before
+
+
+def test_calibrate_rejects_a_file_that_is_not_a_log(capsys):
+    assert run([
+        "calibrate", str(MEASURED / "garbage.txt"),
+        "--cpu", "test-desktop-2ch", "--model", "test-8b-gqa",
+    ]) == 1
+    assert "측정값을 하나도 읽지 못했다" in capsys.readouterr().err
+
+
+def test_calibrate_reports_a_missing_file(tmp_path, capsys):
+    assert run([
+        "calibrate", str(tmp_path / "nope.log"),
+        "--cpu", "test-desktop-2ch", "--model", "test-8b-gqa",
+    ]) == 1
+    assert "파일이 없다" in capsys.readouterr().err
+
+
+def test_mock_reproduces_the_measured_day(capsys):
+    """The generator must land on the real figure, not near it."""
+    assert run(["mock", "--date", "2026-06-01", "--show", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "359" in out
+    # The assumptions have to travel with the data.
+    assert "시간대 분포는 실측이 아니다" in out
+
+
+def test_mock_writes_jsonl_that_round_trips(tmp_path, capsys):
+    path = tmp_path / "alarms.jsonl"
+    assert run(["mock", "--date", "2026-06-02", "--out", str(path)]) == 0
+    capsys.readouterr()
+
+    from svrspec.mockdata import from_jsonl
+
+    day = from_jsonl(path.read_text(encoding="utf-8"))
+    assert len(day.alarms) == 164          # 2026-06-02 measured
+    assert day.notes
+
+
+def test_mock_csv_warns_that_notes_are_lost(tmp_path, capsys):
+    """CSV cannot carry the assumptions, so the CLI has to say so out loud."""
+    path = tmp_path / "alarms.csv"
+    assert run(["mock", "--date", "2026-06-01", "--days", "3", "--out", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "notes" in out or "가정 기록" in out
+    assert "첫날만" in out
+    assert path.read_text(encoding="utf-8-sig").count("\n") == 360  # header + 359
+
+
+def test_serve_runs_the_whole_pipeline(capsys):
+    assert run([
+        "serve", "--model", "test-3b", "--cpu", "test-amx-8ch",
+        "--date", "2026-06-21", "--slots", "4", "--trace", "3",
+    ]) == 0
+    out = capsys.readouterr().out
+    for section in ("실행 결과", "수신", "Teams 전달", "처리 로그", "가장 오래 걸린"):
+        assert section in out
+    assert "가상시간" in out
+
+
+def test_serve_conserves_every_alarm(tmp_path, capsys):
+    csv_path = tmp_path / "d.csv"
+    assert run([
+        "serve", "--model", "test-3b", "--cpu", "test-amx-8ch",
+        "--date", "2026-06-21", "--csv", str(csv_path),
+    ]) == 0
+    capsys.readouterr()
+
+    body = csv_path.read_text(encoding="utf-8-sig").strip().splitlines()
+    assert body[0].startswith("alarm_id,severity")
+    assert len(body) == 27  # header + 26 alarms on 2026-06-21
+
+
+def test_serve_accepts_an_alarm_file(tmp_path, capsys):
+    src = tmp_path / "in.jsonl"
+    assert run(["mock", "--date", "2026-06-21", "--out", str(src)]) == 0
+    capsys.readouterr()
+
+    assert run([
+        "serve", "--model", "test-3b", "--cpu", "test-amx-8ch", "--alarms", str(src),
+    ]) == 0
+    out = capsys.readouterr().out
+    assert str(src) in out
+    assert "26건" in out

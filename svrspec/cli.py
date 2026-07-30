@@ -6,6 +6,8 @@
     svrspec recommend --model X       모델 하나에 대한 CPU 후보 전체 산정
     svrspec fit --cpu Y               서버 하나에 어떤 모델까지 올라가는지
     svrspec size --model X --cpu Y    한 조합의 상세 내역
+    svrspec timeline --model X --cpu Y  하루 리소스 시계열 (CPU·대역폭·연산·KV)
+    svrspec capacity --model X --cpu Y  이 서버가 어디서 무너지는지
     svrspec verify                    메모리 모델과 BPW 표를 실제 GGUF로 검증
     svrspec catalog validate          카탈로그 정합성 검사
     svrspec bundle                    에어갭 서버 반입용 zip
@@ -133,6 +135,88 @@ def _build_parser() -> argparse.ArgumentParser:
     sz.add_argument("--sockets", type=int, default=1)
     sz.add_argument("--dpc", type=int, default=1, choices=[1, 2])
     sz.set_defaults(handler=_cmd_size)
+
+    # timeline -------------------------------------------------------------
+    tl = sub.add_parser("timeline", help="하루 리소스 사용량 시계열 (CPU·대역폭·연산·KV)")
+    tl.add_argument("--model", required=True)
+    tl.add_argument("--cpu", required=True)
+    _add_workload_args(tl)
+    tl.add_argument("--sockets", type=int, default=1)
+    tl.add_argument("--dpc", type=int, default=1, choices=[1, 2])
+    tl.add_argument("--buckets", type=int, default=96,
+                    help="하루를 몇 구간으로 나눌지 (기본 96 = 15분)")
+    tl.add_argument("--pessimistic", action="store_true",
+                    help="판정에 쓰는 불리한 추정으로 그린다 (기본은 명목 예측)")
+    tl.add_argument("--csv", type=Path, default=None, help="버킷 시계열 CSV 출력")
+    tl.add_argument("--host-csv", type=Path, default=None,
+                    help="모니터링 에이전트 형태의 호스트 샘플 CSV 출력")
+    tl.add_argument("--host-period", type=float, default=60.0,
+                    help="호스트 샘플 주기(초). 기본 60 = 하루 1440행")
+    tl.set_defaults(handler=_cmd_timeline)
+
+    # capacity -------------------------------------------------------------
+    cp = sub.add_parser("capacity", help="이 서버가 어디서 무너지는지 (과부하 지점)")
+    cp.add_argument("--model", required=True)
+    cp.add_argument("--cpu", required=True)
+    _add_workload_args(cp)
+    cp.add_argument("--sockets", type=int, default=1)
+    cp.add_argument("--dpc", type=int, default=1, choices=[1, 2])
+    cp.add_argument("--axis", default="all",
+                    choices=["all", "alarms", "storm", "prompt", "output"],
+                    help="부하를 올릴 축 (기본 all = 네 축 전부)")
+    cp.add_argument("--curve", action="store_true", help="탐색 경로의 모든 지점을 표로 출력")
+    cp.add_argument("--csv", type=Path, default=None, help="곡선 CSV 출력")
+    cp.set_defaults(handler=_cmd_capacity)
+
+    # mock -----------------------------------------------------------------
+    mk = sub.add_parser("mock", help="실측 알람량을 재현한 목데이터 생성")
+    mk.add_argument("--date", default="2026-06-01", help="생성할 날짜 (실측일이면 그날의 실제 건수)")
+    mk.add_argument("--days", type=int, default=1, help="이 날짜부터 며칠치")
+    mk.add_argument("--count", type=int, default=None, help="건수 직접 지정 (기본: 실측값)")
+    mk.add_argument("--seed", type=int, default=20260730)
+    mk.add_argument("--storm", default="40/30", help="스톰 크기/창(초)")
+    mk.add_argument("--storms-per-day", type=int, default=2)
+    mk.add_argument("--out", type=Path, default=None, help="저장 경로 (.jsonl 또는 .csv)")
+    mk.add_argument("--show", type=int, default=5, help="표본 몇 건을 화면에 보일지")
+    mk.set_defaults(handler=_cmd_mock)
+
+    # serve ----------------------------------------------------------------
+    sv = sub.add_parser(
+        "serve",
+        help="알람을 실제로 받아 처리하고 Teams로 내보내는 파이프라인 실행")
+    sv.add_argument("--model", required=True)
+    sv.add_argument("--cpu", required=True)
+    _add_workload_args(sv)
+    sv.add_argument("--sockets", type=int, default=1)
+    sv.add_argument("--dpc", type=int, default=1, choices=[1, 2])
+    sv.add_argument("--alarms", type=Path, default=None,
+                    help="JSONL 알람 파일 (미지정 시 --date 로 생성)")
+    sv.add_argument("--date", default="2026-06-01", help="목데이터를 생성할 날짜")
+    sv.add_argument("--speed", type=float, default=0.0,
+                    help="0=가상시간(즉시). 60=실시간 60배속 재생")
+    sv.add_argument("--queue-limit", type=int, default=None,
+                    help="큐 상한. 넘으면 새 알람을 버린다(백프레셔)")
+    sv.add_argument("--trace", type=int, default=0, help="처리 로그를 앞에서 N건 보인다")
+    sv.add_argument("--csv", type=Path, default=None, help="건별 전달 기록 CSV")
+    sv.set_defaults(handler=_cmd_serve)
+
+    # calibrate ------------------------------------------------------------
+    cb = sub.add_parser(
+        "calibrate",
+        help="실측 로그를 읽어 효율 계수를 실측으로 승격 (아무것도 실행하지 않는다)")
+    cb.add_argument("log", type=Path, nargs="+",
+                    help="llama-bench 출력(마크다운/JSON) 또는 llama-server 로그")
+    cb.add_argument("--cpu", required=True, help="그 로그를 낸 CPU의 카탈로그 id")
+    cb.add_argument("--model", required=True, help="그 로그가 돌린 모델의 카탈로그 id")
+    cb.add_argument("--quant", default="Q4_K_M")
+    cb.add_argument("--sockets", type=int, default=1)
+    cb.add_argument("--dpc", type=int, default=1, choices=[1, 2])
+    cb.add_argument("--confidence", default="measured",
+                    choices=["measured", "derived"],
+                    help="로그가 이 SKU의 것이 아니거나 모델을 손으로 맞췄으면 derived")
+    cb.add_argument("--out", type=Path, default=None,
+                    help="유도한 계수를 coefficients.json 형태로 저장")
+    cb.set_defaults(handler=_cmd_calibrate)
 
     # gguf -----------------------------------------------------------------
     gg = sub.add_parser("gguf", help="GGUF 파일 헤더에서 모델 스펙 추출")
@@ -444,6 +528,630 @@ def _cmd_size(args) -> int:
     for w in t.warnings:
         print(f"  ! {w}")
     return 0
+
+
+# --------------------------------------------------------------------------
+# timeline / capacity
+#
+# These two answer the questions `recommend` leaves open: what the machine is
+# actually doing minute to minute, and how much more load it would take before
+# it stops coping. Both are still analytical -- nothing here runs a model or
+# loads this machine. See `_efficiency` for why that boundary matters.
+# --------------------------------------------------------------------------
+
+#: Eight levels of block, for drawing a series in one terminal row.
+SPARK = " ▁▂▃▄▅▆▇█"
+
+
+def _display_width(text: str) -> int:
+    """Terminal columns a string occupies.
+
+    Hangul is double-width, so `len()` misaligns every label column in this
+    file. East Asian Wide and Fullwidth both take two cells.
+    """
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _sparkline(values: list[float], ceiling: float | None = None) -> str:
+    """One row per metric. A day of load has to be legible at a glance.
+
+    Scaled to the series' own maximum unless a ceiling is given, because most
+    of these series spend the day near zero and scaling everything to 100%
+    would draw a flat line for all of them.
+    """
+    if not values:
+        return ""
+    top = ceiling if ceiling else max(values)
+    if top <= 0:
+        return SPARK[0] * len(values)
+    out = []
+    for v in values:
+        level = int(round(max(0.0, min(v / top, 1.0)) * (len(SPARK) - 1)))
+        out.append(SPARK[level])
+    return "".join(out)
+
+
+def _timeline_for(args, cat: Catalog, pessimistic: bool = False):
+    """(candidate, trace, ceilings, timeline) for one build under one workload."""
+    from .simulate import simulate
+    from .sizing import decode_table
+    from .timeline import build_timeline, ceilings_for
+
+    model = cat.model(args.model)
+    quant = cat.quant(args.quant)
+    cpu = cat.cpu(args.cpu)
+    memory = cat.memory_for(cpu, args.dpc)
+    workload = _workload_from(args)
+    eff = _efficiency(cat)
+
+    candidate = evaluate(model, quant, cpu, memory, eff, workload, args.sockets)
+    # The verdict runs on the derated prediction; the resource picture defaults
+    # to the nominal one. Drawing the pessimistic day by default would show a
+    # machine slower than the one being quoted.
+    derate = max(1.0 - candidate.throughput.uncertainty, 0.05) if pessimistic else 1.0
+    _, trace = simulate(
+        workload,
+        prefill_tps=candidate.throughput.prefill_tps * derate,
+        decode_by_active=decode_table(
+            model, quant, cpu, memory, workload, args.sockets, eff, derate=derate
+        ),
+    )
+    ceilings = ceilings_for(
+        model, quant, cpu, memory, eff, workload,
+        candidate.throughput, args.sockets, candidate.memory_gb,
+    )
+    buckets = max(int(getattr(args, "buckets", 96)), 1)
+    return candidate, trace, ceilings, build_timeline(trace, ceilings, buckets=buckets)
+
+
+def _cmd_timeline(args) -> int:
+    cat = _catalog(args)
+    workload = _workload_from(args)
+    candidate, trace, ceilings, tl = _timeline_for(args, cat, args.pessimistic)
+    model, cpu = candidate.model, candidate.cpu
+    b = tl.buckets
+
+    print(f"모델    {model.name}  {model.params_b:.2f}B  {candidate.quant.id}")
+    print(f"서버    {cpu.vendor} {cpu.model}  {cpu.cores * args.sockets}코어 "
+          f"{args.sockets}소켓  {cpu.mem_channels * args.sockets}ch "
+          f"{candidate.memory.ddr_gen}-{candidate.memory.effective_mts}  "
+          f"RAM {candidate.memory_gb}GB")
+    print(f"부하    {report.describe_workload(workload)}")
+    print()
+
+    minutes = (24 * 60) / len(b)
+    basis = "불리한 추정" if args.pessimistic else "명목 예측"
+    print(f"하루 리소스 시계열 ({minutes:.0f}분 x {len(b)}버킷, {basis} 기준)")
+    print()
+    rows = [
+        ("CPU 가동", [x.cpu_pct for x in b], f"최대 {max(x.cpu_pct for x in b):.1f}%"),
+        ("대역폭 평균", [x.bandwidth_avg_pct for x in b],
+         f"최대 {max(x.bandwidth_avg_pct for x in b):.1f}% "
+         f"(순간 피크 {tl.peak_bandwidth_pct:.0f}%)"),
+        ("연산 평균", [x.compute_avg_pct for x in b],
+         f"최대 {max(x.compute_avg_pct for x in b):.1f}% "
+         f"(순간 피크 {tl.peak_compute_pct:.0f}%)"),
+        ("KV 실사용", [x.kv_used_gb for x in b],
+         f"최대 {tl.peak_kv_used_gb:.2f}GB / 예약 "
+         f"{ceilings.kv_reserved_bytes / 1024 ** 3:.2f}GB"),
+        ("큐 깊이", [float(x.queued) for x in b], f"최대 {tl.peak_queue}"),
+        ("도착", [float(x.arrived) for x in b], f"합계 {sum(x.arrived for x in b)}건"),
+    ]
+    width = max(_display_width(name) for name, *_ in rows)
+    for name, values, note in rows:
+        pad = " " * (width - _display_width(name))
+        print(f"  {name}{pad}  {_sparkline(values)}  {note}")
+    axis_pad = " " * (width + 2)
+    print(f"  {axis_pad}0h{' ' * max(len(b) - 5, 0)}24h")
+    print("  각 행은 자기 계열의 최대값에 맞춰 그린다 — 절대값은 오른쪽 주석을 봐라.")
+    print()
+
+    label = {"bandwidth": "메모리 대역폭", "compute": "연산", "none": "없음"}
+    print("병목 진단")
+    print(f"  작업시간 배분   prefill {tl.prefill_share:.1%} / decode {tl.decode_share:.1%}")
+    print(f"  천장에 붙은 시간 대역폭 {tl.seconds_bandwidth_bound / 60:.1f}분 · "
+          f"연산 {tl.seconds_compute_bound / 60:.1f}분 "
+          f"(총 가동 {tl.busy_seconds / 60:.1f}분, 하루의 {tl.busy_seconds / 864:.2f}%)")
+    print(f"  →  {label.get(tl.binding_resource, tl.binding_resource)} 바운드")
+    # The two splits are not the same question, and they can disagree. Batched
+    # decode is 2*P flops per token like prefill is, so on a part with narrow
+    # vector units the compute ceiling binds decode too -- the phase holding
+    # the machine is then decode while the ceiling it sits on is compute.
+    if (tl.decode_share > tl.prefill_share) != (
+        tl.seconds_bandwidth_bound > tl.seconds_compute_bound
+    ):
+        print("  (decode가 더 오래 돌지만 대역폭이 아니라 연산 천장에 걸려 있다 — "
+              "슬롯을 묶어 배치 decode를 하면 토큰당 연산량이 prefill과 같아지고, "
+              "벡터유닛이 좁은 부품에서는 그쪽이 먼저 찬다)")
+    print("  순간 포화는 과부하가 아니다 — decode 중인 요청은 정의상 어느 한 천장에 붙어 있다. "
+          "과부하는 큐가 쌓이는 것이다.")
+    print()
+
+    busiest = sorted(b, key=lambda x: (-x.queued, -x.cpu_pct))[:5]
+    print("가장 바쁜 구간 (상위 5)")
+    print(report._table(
+        ["시각", "CPU%", "대역폭 평균%", "대역폭 피크%", "연산 평균%", "연산 피크%",
+         "KV GB", "RAM GB", "큐", "도착", "완료"],
+        [[f"{x.t_s / 3600:.2f}h", f"{x.cpu_pct:.1f}",
+          f"{x.bandwidth_avg_pct:.1f}", f"{x.bandwidth_peak_pct:.0f}",
+          f"{x.compute_avg_pct:.1f}", f"{x.compute_peak_pct:.0f}",
+          f"{x.kv_used_gb:.2f}", f"{x.ram_used_gb:.2f}",
+          f"{x.queued}", f"{x.arrived}", f"{x.completed}"] for x in busiest],
+        aligns="lrrrrrrrrrr"))
+    print("  평균은 그 15분의 정직한 부하, 피크는 그 안에서 실제로 닿은 천장이다. "
+          "평균만 보면 스톰이 사라지고 피크만 보면 종일 포화로 보인다.")
+    for note in tl.notes:
+        print(f"  ! {note}")
+
+    if args.csv:
+        _write_timeline_csv(args.csv, tl)
+        print(f"\n버킷 시계열 CSV 저장: {args.csv}")
+
+    if args.host_csv:
+        from .hostsim import sample_host, to_csv
+
+        host = sample_host(
+            trace, ceilings, candidate.cpu,
+            installed_gb=candidate.memory_gb,
+            sockets=args.sockets,
+            period_s=args.host_period,
+        )
+        # utf-8-sig: these land in Excel next to the other exports, and a
+        # sibling file opening as mojibake is worse than a three-byte prefix.
+        args.host_csv.write_text(to_csv(host), encoding="utf-8-sig")
+        print(f"호스트 샘플 CSV 저장: {args.host_csv} "
+              f"({len(host.samples)}행, {host.period_s:.0f}초 주기, "
+              f"최대 RSS {host.peak_rss_gb:.2f}GB)")
+        for note in host.notes:
+            print(f"  ! {note}")
+    return 0
+
+
+def _write_timeline_csv(path: Path, tl) -> None:
+    import csv
+
+    fields = [
+        "t_s", "cpu_pct", "bandwidth_avg_gbs", "bandwidth_avg_pct", "bandwidth_peak_pct",
+        "compute_avg_tflops", "compute_avg_pct", "compute_peak_pct", "prefill_tps",
+        "decode_tps", "kv_used_gb", "ram_used_gb", "ram_pct", "queued", "active",
+        "arrived", "completed",
+    ]
+    # utf-8-sig so Excel opens the Korean headers of sibling exports correctly;
+    # this file has none, but the exports must not disagree on encoding.
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(fields)
+        for bucket in tl.buckets:
+            writer.writerow([f"{getattr(bucket, f):.4f}"
+                             if isinstance(getattr(bucket, f), float)
+                             else getattr(bucket, f) for f in fields])
+
+
+def _cmd_capacity(args) -> int:
+    from .capacity import AXES, AXIS_LABEL, LIMITER_LABEL, find_knee, weakest_axis
+
+    cat = _catalog(args)
+    model = cat.model(args.model)
+    quant = cat.quant(args.quant)
+    cpu = cat.cpu(args.cpu)
+    memory = cat.memory_for(cpu, args.dpc)
+    workload = _workload_from(args)
+    eff = _efficiency(cat)
+
+    axes = AXES if args.axis == "all" else (args.axis,)
+    curves = {
+        axis: find_knee(model, quant, cpu, memory, eff, workload, axis, args.sockets)
+        for axis in axes
+    }
+
+    print(f"모델    {model.name}  {model.params_b:.2f}B  {quant.id}")
+    print(f"서버    {cpu.vendor} {cpu.model}  {cpu.cores * args.sockets}코어 "
+          f"{args.sockets}소켓  {cpu.mem_channels * args.sockets}ch "
+          f"{memory.ddr_gen}-{memory.effective_mts}")
+    print(f"부하    {report.describe_workload(workload)}")
+    print()
+    print("과부하 지점 — 부하를 올려 SLA가 깨지는 지점을 찾는다 (불리한 추정 기준)")
+    print()
+
+    rows = []
+    for axis, curve in curves.items():
+        name, unit = AXIS_LABEL[axis]
+        knee = f"{curve.knee.value:,}{unit}" if curve.knee else "없음"
+        brk = f"{curve.breaks_at.value:,}{unit}" if curve.breaks_at else "—"
+        headroom = "∞" if curve.hit_ceiling else (
+            f"{curve.headroom:.1f}배" if curve.knee else "0배")
+        rows.append([name, f"{curve.baseline:,}{unit}", knee, brk, headroom,
+                     LIMITER_LABEL[curve.limiter]])
+    print(report._table(["부하 축", "현재", "무릎(마지막 통과)", "붕괴", "여유", "한계 요인"],
+                        rows, aligns="lrrrrl"))
+    print()
+
+    weakest = weakest_axis(curves)
+    if weakest:
+        curve = curves[weakest]
+        name, unit = AXIS_LABEL[weakest]
+        print(f"가장 먼저 무너지는 축: {name} — 지금 {curve.baseline:,}{unit}에서 "
+              f"{curve.knee.value:,}{unit}까지가 한계다 (여유 {curve.headroom:.1f}배)")
+        if curve.breaks_at:
+            for reason in curve.breaks_at.reasons:
+                print(f"  - {reason}")
+    else:
+        print("탐색 상한까지 올려도 무너지는 축이 없다 — 이 부하 범위에서는 하드웨어가 문제가 아니다")
+    print()
+
+    for axis, curve in curves.items():
+        for note in curve.notes:
+            print(f"  ! [{AXIS_LABEL[axis][0]}] {note}")
+
+    if args.curve:
+        for axis, curve in curves.items():
+            name, unit = AXIS_LABEL[axis]
+            print()
+            print(f"{name} 탐색 경로 ({len(curve.points)}점)")
+            print(report._table(
+                ["부하", "판정", "평상시 p95", "스톰 소진", "최대 큐", "가동률", "병목"],
+                [[f"{p.value:,}{unit}", report.VERDICT_LABEL.get(p.verdict, p.verdict),
+                  f"{p.p95_steady_s:.1f}s", f"{p.storm_drain_s / 60:.1f}분",
+                  f"{p.max_queue}", f"{p.busy_fraction:.1%}", p.binding_resource]
+                 for p in curve.points],
+                aligns="rlrrrrl"))
+
+    if args.csv:
+        _write_capacity_csv(args.csv, curves)
+        print(f"\nCSV 저장: {args.csv}")
+    return 0
+
+
+def _write_capacity_csv(path: Path, curves: dict) -> None:
+    import csv
+
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["axis", "value", "verdict", "p95_steady_s", "storm_drain_s",
+                         "max_queue", "busy_fraction", "binding_resource",
+                         "ram_needed_gb", "reasons"])
+        for axis, curve in curves.items():
+            for p in curve.points:
+                writer.writerow([axis, p.value, p.verdict, f"{p.p95_steady_s:.3f}",
+                                 f"{p.storm_drain_s:.3f}", p.max_queue,
+                                 f"{p.busy_fraction:.4f}", p.binding_resource,
+                                 p.ram_needed_gb, " | ".join(p.reasons)])
+
+
+# --------------------------------------------------------------------------
+# mock / serve
+#
+# `serve` is the closest this tool gets to running the thing it sizes: real
+# alarm records go in, a queue forms, slots pick them up, cards come out the
+# other end. What it does *not* do is run a model -- service times come from
+# the same analytical prediction `recommend` uses. So it exercises the shape of
+# the system (queueing, back-pressure, storm drain, per-alarm journeys) without
+# loading this machine, which is the boundary the whole tool is built on.
+# --------------------------------------------------------------------------
+
+
+def _cmd_mock(args) -> int:
+    from .mockdata import generate_range, to_csv, to_jsonl
+
+    try:
+        size_s, window_s = args.storm.split("/")
+        storm_size, storm_window = int(size_s), float(window_s)
+    except ValueError:
+        raise SystemExit(f"--storm 형식은 '개수/초' 이다 (받은 값: {args.storm!r})")
+
+    days = generate_range(
+        args.date, max(args.days, 1), count=args.count, seed=args.seed,
+        storm_size=storm_size, storms_per_day=args.storms_per_day,
+        storm_window_s=storm_window,
+    )
+    total = sum(len(d.alarms) for d in days)
+    print(f"목데이터 {len(days)}일치 · 총 {total:,}건")
+    print(report._table(
+        ["날짜", "건수", "스톰", "심각도 분포"],
+        [[d.date, f"{len(d.alarms)}", f"{d.storms}회",
+          " ".join(f"{s} {sum(1 for a in d.alarms if a.severity == s)}"
+                   for s in ("critical", "major", "minor", "warning"))]
+         for d in days], aligns="lrrl"))
+
+    if args.show:
+        print()
+        print(f"표본 {args.show}건")
+        first = days[0]
+        for a in first.alarms[:args.show]:
+            hh, mm, ss = int(a.at_s // 3600), int(a.at_s % 3600 // 60), int(a.at_s % 60)
+            tag = f" [스톰{a.storm_id}]" if a.storm_id is not None else ""
+            child = " ↳파생" if a.parent_id else ""
+            print(f"  {hh:02d}:{mm:02d}:{ss:02d}  {a.severity:<8} {a.code:<12} "
+                  f"{a.device:<16} {a.message}{tag}{child}")
+
+    for note in days[0].notes:
+        print(f"  ! {note}")
+
+    if args.out:
+        if args.out.suffix == ".csv":
+            # CSV has no place for the day-level notes, and those notes are the
+            # only record of which numbers are measured and which are assumed.
+            # Writing it is fine; letting it leave silently is not.
+            args.out.write_text(to_csv(days[0]), encoding="utf-8-sig")
+            print(f"\n저장: {args.out} (1일치 {len(days[0].alarms):,}건, CSV)")
+            print("  ! CSV에는 위 가정 기록(notes)이 담기지 않고 다시 읽을 수도 없다. "
+                  "파이프라인에 넣거나 보관하려면 .jsonl 로 저장해라.")
+            if len(days) > 1:
+                print(f"  ! CSV는 첫날만 저장했다 ({len(days)}일치를 요청했다).")
+        else:
+            args.out.write_text("".join(to_jsonl(d) for d in days), encoding="utf-8")
+            print(f"\n저장: {args.out} ({len(days)}일치 {total:,}건, JSONL)")
+    return 0
+
+
+def _cmd_serve(args) -> int:
+    from .mockdata import from_jsonl, generate_day
+    from .pipeline import TeamsSink, build_service_model, run_pipeline
+
+    cat = _catalog(args)
+    model = cat.model(args.model)
+    quant = cat.quant(args.quant)
+    cpu = cat.cpu(args.cpu)
+    memory = cat.memory_for(cpu, args.dpc)
+    workload = _workload_from(args)
+    eff = _efficiency(cat)
+
+    if args.alarms:
+        day = from_jsonl(args.alarms.read_text(encoding="utf-8"))
+        source = str(args.alarms)
+    else:
+        day = generate_day(
+            args.date, count=args.alarms_per_day if args.alarms_per_day != 150 else None,
+            seed=args.seed, storm_size=workload.storm_size,
+            storms_per_day=workload.storms_per_day,
+            storm_window_s=workload.storm_window_s,
+        )
+        source = f"생성 ({day.date})"
+
+    service = build_service_model(model, quant, cpu, memory, eff, workload, args.sockets)
+    sink = TeamsSink()
+    seen: list[dict] = []
+    stats, deliveries = run_pipeline(
+        day.alarms, service, workload, sink=sink, speed=args.speed,
+        queue_limit=args.queue_limit,
+        on_event=(lambda ev: seen.append(ev)) if args.trace else None,
+    )
+
+    mode = "가상시간" if args.speed <= 0 else f"실시간 {args.speed:g}배속"
+    print(f"모델    {model.name}  {model.params_b:.2f}B  {quant.id}")
+    print(f"서버    {cpu.vendor} {cpu.model}  {cpu.cores * args.sockets}코어 "
+          f"{args.sockets}소켓  {cpu.mem_channels * args.sockets}ch "
+          f"{memory.ddr_gen}-{memory.effective_mts}  ·  {workload.slots}슬롯")
+    print(f"알람    {source} · {len(day.alarms):,}건 · 스톰 {day.storms}회")
+    print(f"모드    {mode}"
+          + (f" (실제 소요 {stats.wall_clock_s:.2f}초)" if stats.wall_clock_s > 0.01 else ""))
+    print()
+
+    if args.trace:
+        print(f"처리 로그 (앞 {args.trace}건)")
+        for ev in seen[:args.trace]:
+            print(f"  t={ev['t']:>9.2f}s  {ev['phase']:<8} {ev['alarm_id']:<22} "
+                  f"큐 {ev['queue']:>3}  처리중 {ev['active']}")
+        print()
+
+    print("실행 결과")
+    print(report._table(["지표", "값", "판정 기준"], [
+        ["수신", f"{stats.received:,}건", ""],
+        ["Teams 전달", f"{stats.delivered:,}건", f"싱크 수신 {len(sink.sent):,}건"],
+        ["버림", f"{stats.dropped:,}건", "큐 상한 초과" if stats.dropped else "없음"],
+        ["평상시 p95", f"{stats.p95_steady_s:.1f} s",
+         f"SLA {workload.sla_seconds:.0f}s {'충족' if stats.sla_met else '초과'}"],
+        ["스톰 소진", f"{stats.storm_drain_s / 60:.2f} 분",
+         f"목표 {workload.storm_drain_sla_s / 60:.0f}분 "
+         f"{'충족' if stats.storm_sla_met else '초과'}"],
+        ["전체 p50 / p99", f"{stats.p50_s:.1f} / {stats.p99_s:.1f} s", "스톰 대기 포함"],
+        ["최대 / 평균 큐", f"{stats.max_queue} / {stats.mean_queue:.1f}", ""],
+        ["가동률", f"{stats.busy_fraction:.2%}", "하루 중 일한 시간"],
+        ["슬롯 점유율", f"{stats.slot_utilisation:.1%}", ""],
+        ["처리 토큰", f"{stats.tokens_prefill:,} + {stats.tokens_generated:,}",
+         "prefill + 생성"],
+    ], aligns="lrl"))
+
+    if deliveries:
+        worst = sorted((d for d in deliveries if not d.dropped),
+                       key=lambda d: -d.total_s)[:5]
+        print()
+        print("가장 오래 걸린 5건")
+        # TTFT is measured from arrival, the way a client experiences it, so it
+        # already contains the queue wait. Showing both beside a "합계" column
+        # would read as a sum that does not add up, so the prompt-processing
+        # time is broken back out instead.
+        print(report._table(
+            ["알람", "심각도", "큐 대기", "프롬프트", "생성", "전송", "합계", "스톰"],
+            [[d.alarm_id, d.severity, f"{d.queue_wait_s:.1f}s",
+              f"{d.ttft_s - d.queue_wait_s:.1f}s",
+              f"{d.generate_s:.1f}s", f"{d.deliver_s:.2f}s", f"{d.total_s:.1f}s",
+              str(d.storm_id) if d.storm_id is not None else "—"] for d in worst],
+            aligns="llrrrrrl"))
+        print("  큐 대기 + 프롬프트 + 생성 + 전송 = 합계. "
+              "(첫 토큰까지의 시간 TTFT는 도착 기준이라 큐 대기를 포함한다)")
+
+    if args.csv:
+        _write_deliveries_csv(args.csv, deliveries)
+        print(f"\n건별 기록 저장: {args.csv} ({len(deliveries):,}행)")
+    return 0
+
+
+def _write_deliveries_csv(path: Path, deliveries: list) -> None:
+    import csv
+
+    fields = ["alarm_id", "severity", "storm_id", "arrived_s", "started_s",
+              "first_token_s", "generated_s", "delivered_s", "slot",
+              "prompt_tokens", "output_tokens", "queue_wait_s", "ttft_s",
+              "generate_s", "deliver_s", "total_s", "dropped"]
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(fields)
+        for d in deliveries:
+            writer.writerow([getattr(d, f) for f in fields])
+
+
+# --------------------------------------------------------------------------
+# calibrate
+#
+# The only path by which a measurement enters this tool. It reads a log
+# somebody else produced; it never generates load. That is not squeamishness --
+# the server being sized is not this machine, so benchmarking this one would
+# answer a different question. See the module docstring of `measured.py`.
+# --------------------------------------------------------------------------
+
+
+def _cmd_calibrate(args) -> int:
+    from .measured import (
+        compare_to_prediction,
+        derive_eta_bw,
+        derive_eta_compute,
+        parse_llama_bench,
+        parse_memory,
+        parse_server_log,
+    )
+    from .perf import predict_throughput
+
+    cat = _catalog(args)
+    model = cat.model(args.model)
+    quant = cat.quant(args.quant)
+    cpu = cat.cpu(args.cpu)
+    memory = cat.memory_for(cpu, args.dpc)
+    eff = _efficiency(cat)
+
+    points, memories = [], []
+    for path in args.log:
+        if not path.exists():
+            print(f"svrspec: 파일이 없다: {path}", file=sys.stderr)
+            return 1
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found = parse_llama_bench(text, source=str(path)) or parse_server_log(
+            text, source=str(path))
+        points.extend(found)
+        mem = parse_memory(text, source=str(path))
+        if any((mem.model_size_mib, mem.kv_self_mib, mem.compute_buffer_mib)):
+            memories.append(mem)
+
+    if not points:
+        print("측정값을 하나도 읽지 못했다. llama-bench 표/JSON 또는 llama-server 로그인지 "
+              "확인해라.", file=sys.stderr)
+        return 1
+
+    print(f"모델    {model.name}  {model.params_b:.2f}B  {quant.id}")
+    print(f"서버    {cpu.vendor} {cpu.model}  {cpu.cores * args.sockets}코어 "
+          f"{args.sockets}소켓  {cpu.mem_channels * args.sockets}ch "
+          f"{memory.ddr_gen}-{memory.effective_mts}")
+    print()
+    print(f"읽은 측정값 {len(points)}건")
+    print(report._table(
+        ["출처", "구간", "tok/s", "편차", "ctx", "스레드", "모델 라벨"],
+        [[Path(p.source).name, p.kind, f"{p.tokens_per_s:.2f}",
+          f"±{p.stddev:.2f}" if p.stddev else "—", str(p.n_ctx or "—"),
+          str(p.n_threads or "—"), p.model_label[:28]] for p in points],
+        aligns="llrrrrl"))
+    print()
+
+    # Predicted vs measured, before anything is changed. The error is the
+    # reason to calibrate, so it has to be visible first.
+    tokens = TokenProfile()
+    prediction = predict_throughput(
+        model, quant, cpu, memory, tokens, eff, slots=1, sockets=args.sockets)
+    print(f"예측 대조 (현재 카탈로그 계수, 불확실도 ±{prediction.uncertainty:.0%})")
+    rows = []
+    for p in points:
+        c = compare_to_prediction(p, prediction)
+        rows.append([p.kind, f"{c['measured_tps']:.2f}", f"{c['predicted_tps']:.2f}",
+                     f"{c['error_pct']:+.1f}%",
+                     "오차범위 안" if c["within_uncertainty"] else "오차범위 밖",
+                     c["verdict"]])
+    print(report._table(["구간", "실측 tok/s", "예측 tok/s", "오차", "판정", ""],
+                        rows, aligns="lrrrll"))
+    print()
+
+    derived = []
+    for p in points:
+        try:
+            if p.kind == "tg":
+                cal = derive_eta_bw(p, model, quant, cpu, memory,
+                                    sockets=args.sockets,
+                                    previous=_previous(eff, "eta_bw", memory.ddr_gen),
+                                    confidence=args.confidence)
+            else:
+                from .perf import widest_isa
+
+                cal = derive_eta_compute(p, model, cpu, sockets=args.sockets,
+                                         previous=_previous(eff, "eta_compute",
+                                                            widest_isa(cpu)),
+                                         confidence=args.confidence)
+        except ValueError as exc:
+            print(f"  건너뜀 [{p.kind} {p.tokens_per_s:.2f} tok/s]: {exc}")
+            continue
+        derived.append(cal)
+
+    if not derived:
+        print("유도할 수 있는 계수가 없다.", file=sys.stderr)
+        return 1
+
+    print(f"유도한 계수 {len(derived)}건")
+    print(report._table(
+        ["계수", "기존", "실측", "변화", "근거 수준"],
+        [[c.coefficient.id,
+          f"{c.previous_value:.3f}" if c.previous_value is not None else "—",
+          f"{c.coefficient.value:.3f}",
+          f"{c.change_pct:+.1f}%" if c.change_pct is not None else "—",
+          report.CONFIDENCE_LABEL.get(c.coefficient.confidence,
+                                      c.coefficient.confidence)]
+         for c in derived],
+        aligns="lrrrl"))
+    print()
+    for c in derived:
+        print(f"  {c.coefficient.id}: {c.basis}")
+
+    if memories:
+        print()
+        print("로그가 보고한 메모리 (svrspec verify가 대조하는 그 줄들)")
+        print(report._table(
+            ["출처", "모델", "KV", "컴퓨트 버퍼", "n_ctx", "슬롯"],
+            [[Path(m.source).name,
+              f"{m.model_size_mib:.0f} MiB" if m.model_size_mib else "—",
+              f"{m.kv_self_mib:.0f} MiB" if m.kv_self_mib else "—",
+              f"{m.compute_buffer_mib:.0f} MiB" if m.compute_buffer_mib else "—",
+              str(m.n_ctx or "—"), str(m.n_slots or "—")] for m in memories],
+            aligns="lrrrrr"))
+
+    if args.out:
+        _write_coefficients(args.out, derived)
+        print(f"\n계수 저장: {args.out}")
+        print("  카탈로그에 반영하려면 이 파일의 항목을 "
+              "svrspec/catalog/coefficients.json 에 병합해라 — "
+              "덮어쓰기는 되돌리기 어려우므로 자동으로 하지 않는다.")
+    return 0
+
+
+def _previous(eff: Efficiency, kind: str, key: str):
+    """The catalogue value this derivation would replace, if there is one."""
+    try:
+        return eff.get(kind, key)
+    except KeyError:
+        return None
+
+
+def _write_coefficients(path: Path, calibrations: list) -> None:
+    """Write a catalog-shaped coefficients file. Never merges in place.
+
+    Merging would rewrite the shipped catalogue from a single log, and one
+    log is one machine on one day. The operator decides what to promote.
+    """
+    import json
+
+    payload = {
+        "schema": "coefficients/v1",
+        "entries": [dataclasses.asdict(c.coefficient) for c in calibrations],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
 
 
 def _cmd_gguf(args) -> int:

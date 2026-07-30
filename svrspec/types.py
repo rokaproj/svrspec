@@ -24,11 +24,24 @@ SOURCE_MODEL_CARD = "model_card"
 #: sites answer 403 to anything that is not a browser, and a transcribed
 #: third-party table beats an estimate.
 SOURCE_THIRD_PARTY = "third_party_db"
+#: Values derived from a benchmark log somebody actually ran -- llama-bench
+#: output, or a llama-server startup/inference log -- and imported into the
+#: tool. Ranks above a third-party spec table because it is a measurement of
+#: the thing being predicted rather than a specification of the hardware, but
+#: it is not a citable public page, so `source_url` carries the log's identity
+#: (file path, ticket, or run label) instead of a URL.
+SOURCE_MEASUREMENT = "measurement"
 #: Values recalled without a datasheet at hand. Usable for exploration,
 #: flagged in reports, must be confirmed before a spec sheet ships.
 SOURCE_UNVERIFIED = "unverified"
 
-VALID_SOURCES = (SOURCE_VENDOR, SOURCE_MODEL_CARD, SOURCE_THIRD_PARTY, SOURCE_UNVERIFIED)
+VALID_SOURCES = (
+    SOURCE_VENDOR,
+    SOURCE_MODEL_CARD,
+    SOURCE_THIRD_PARTY,
+    SOURCE_MEASUREMENT,
+    SOURCE_UNVERIFIED,
+)
 
 
 @dataclass(frozen=True)

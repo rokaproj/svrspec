@@ -542,16 +542,21 @@ def test_series_shows_the_storms_as_spikes(cat):
     assert max(d["series"]["active"]) >= 1
 
 
-def test_buckets_conserve_busy_time(cat):
-    """Every event's span must land in exactly one bucket's worth of time."""
-    from svrspec.gui import _buckets
+def test_the_series_conserves_the_days_work(cat):
+    """Every busy second must land in exactly one bucket's worth of time.
 
-    events = [(0.0, 1, 0, 100.0), (500.0, 2, 3, 1000.0), (86000.0, 1, 0, 400.0)]
-    span = 86400.0
-    b = _buckets(events, span, count=96)
-    width = span / 96
-    charged = sum(v * width for v in b["cpu"])
-    assert abs(charged - sum(e[3] for e in events)) < 1.0
+    Replaces the old `_buckets` unit test: the folding is now done once, by
+    `timeline.build_timeline`, and the GUI only reshapes it. What still has to
+    hold at this layer is that reshaping loses nothing.
+    """
+    from svrspec.gui import resource_payload
+
+    d = resource_payload(cat, _params(BASE_REQUEST), "test-desktop-2ch")
+    s = d["series"]
+    charged = sum(v * s["bucket_s"] for v in s["cpu"])
+    # The series is rounded for the wire (4 dp on a fraction), which is worth
+    # at most 0.09 s per bucket.
+    assert abs(charged - d["bottleneck"]["busy_seconds"]) < 96 * 0.1
 
 
 def test_live_tiles_carry_what_the_task_manager_shows(cat):
@@ -573,6 +578,219 @@ def test_hardware_block_carries_the_identity_fields(cat):
     for key in ("label", "cores", "threads", "ghz", "isa", "memory",
                 "bandwidth_gbs", "l3_mb", "ram_max_gb", "slots"):
         assert key in hw
+
+
+# --------------------------------------------------------------------------
+# Four resources, four series
+# --------------------------------------------------------------------------
+
+
+def _shape(values: list[float]) -> list[float]:
+    """Normalised to its own peak. Two rescaled copies of one scalar match here."""
+    top = max(values) or 1.0
+    return [round(v / top, 3) for v in values]
+
+
+def test_the_four_resource_series_are_actually_four_series(cat):
+    """The regression this whole view exists to prevent.
+
+    The previous version put `busy_fraction` into the CPU line, copied it into
+    the bandwidth line, and drew memory as a constant. Three graphs, one number.
+    Prefill saturates the vector units while DRAM idles and decode does the
+    reverse, so bandwidth and compute must not even have the same *shape*.
+    """
+    from itertools import combinations
+
+    from svrspec.gui import resource_payload
+
+    s = resource_payload(cat, _params(BASE_REQUEST), "test-desktop-2ch")["series"]
+    names = ("cpu_pct", "bandwidth_pct", "compute_pct", "ram_pct")
+    for a, b in combinations(names, 2):
+        assert s[a] != s[b], f"{a} and {b} are the same numbers"
+        assert _shape(s[a]) != _shape(s[b]), f"{a} and {b} are one series rescaled"
+
+    # Peak and average are different questions too: averaging a storm away is
+    # how a sizing tool ends up calling an overloaded box idle.
+    assert s["bandwidth_peak_pct"] != s["bandwidth_pct"]
+    assert max(s["bandwidth_peak_pct"]) > max(s["bandwidth_pct"])
+    assert max(s["compute_peak_pct"]) > max(s["compute_pct"])
+
+
+def test_the_memory_series_moves_over_the_day(cat):
+    """"RAM never changes" was half the complaint. KV residency is not constant."""
+    from svrspec.gui import resource_payload
+
+    d = resource_payload(cat, _params(BASE_REQUEST), "test-desktop-2ch")
+    used = d["series"]["ram_used_gb"]
+    assert len(set(used)) > 1
+    assert max(used) > min(used)
+    assert max(d["series"]["kv_used_gb"]) > 0
+
+    # ...and the moving line must never be mistaken for the order quantity:
+    # llama.cpp reserves the whole context per slot whether or not it is
+    # touched, so the reserved figure is the larger one and it is what the
+    # server has to be given.
+    assert d["ceilings"]["allocated_gb"] >= max(used) - 0.01
+    assert d["live"]["ram_reserved_gb"] >= d["live"]["ram_live_peak_gb"]
+    assert d["live"]["kv_reserved_gb"] >= d["live"]["kv_live_peak_gb"]
+    assert d["ceilings"]["installed_gb"] >= d["ceilings"]["allocated_gb"]
+
+
+def test_every_series_has_a_bucket_per_quarter_hour(cat):
+    from svrspec.gui import resource_payload
+
+    s = resource_payload(cat, _params(BASE_REQUEST), "test-amx-8ch")["series"]
+    for key, value in s.items():
+        if key == "bucket_s":
+            continue
+        assert len(value) == 96, key
+
+
+def test_the_bottleneck_line_names_a_resource_and_a_phase_split(cat):
+    """The sentence that decides cores versus memory channels."""
+    from svrspec.gui import resource_payload
+
+    b = resource_payload(cat, _params(BASE_REQUEST), "test-amx-8ch")["bottleneck"]
+    assert b["resource"] in ("bandwidth", "compute", "none")
+    assert b["label"] in ("메모리 대역폭", "연산", "없음")
+    assert 0 <= b["prefill_share"] <= 100
+    assert abs(b["prefill_share"] + b["decode_share"] - 100) < 1.5
+    assert b["sentence"] and b["advice"]
+    # An instantaneous ceiling is not overload; a queue is. The payload has to
+    # carry that distinction or the UI will paint every healthy box red.
+    assert b["overloaded"] == (b["peak_queue"] > 0)
+    assert "큐" in b["overload"]
+
+
+def test_the_task_manager_and_the_row_table_agree_on_their_denominators(cat):
+    """One set of numbers. The graph and the table must not disagree."""
+    from svrspec.gui import resource_payload
+
+    p = _params({**BASE_REQUEST, "alarms_per_day": 2000})
+    row = resource_payload(cat, p, "test-amx-8ch", (2000,))["rows"][0]
+    assert row["bandwidth_avg_gbs"] <= row["bandwidth_gbs"] + 0.1
+    assert row["bound"] in ("bandwidth", "compute", "none")
+    # The table's resource columns are per-resource too, not one busy fraction
+    # reprinted three times.
+    assert row["cpu_pct"] != row["bandwidth_pct"] != row["compute_pct"]
+    assert row["bandwidth_peak_pct"] > row["bandwidth_pct"]
+    assert row["ram_live_peak_gb"] <= row["ram_used_gb"] + 0.01
+
+
+# --------------------------------------------------------------------------
+# Where it breaks
+# --------------------------------------------------------------------------
+
+
+def test_capacity_payload_carries_the_knee_and_the_limiter(cat):
+    from svrspec.gui import capacity_payload
+
+    d = capacity_payload(cat, _params(BASE_REQUEST), "test-desktop-2ch")
+    json.dumps(d, allow_nan=False)      # Infinity would break JSON.parse
+
+    for key in ("knee", "breaks_at", "limiter", "headroom", "weakest_axis", "axes"):
+        assert key in d
+    assert {a["axis"] for a in d["axes"]} == {"alarms", "storm", "prompt", "output"}
+    assert d["weakest_axis"] in {a["axis"] for a in d["axes"]} or d["weakest_axis"] is None
+    assert sum(1 for a in d["axes"] if a["weakest"]) <= 1
+
+    for a in d["axes"]:
+        assert a["label"] and a["unit"]
+        assert a["limiter_label"]
+        assert a["points"], "the ramp itself is the evidence; it must be kept"
+        assert [pt["value"] for pt in a["points"]] == sorted(
+            pt["value"] for pt in a["points"]
+        )
+        if a["knee"]:
+            assert a["knee"]["ok"]
+        if a["breaks_at"]:
+            assert not a["breaks_at"]["ok"]
+            assert a["breaks_at"]["value"] > (a["knee"]["value"] if a["knee"] else -1)
+
+
+def test_capacity_reports_no_limit_as_null_not_infinity(cat):
+    """A storm size of zero makes headroom infinite; JSON cannot carry that."""
+    from svrspec.gui import capacity_payload
+
+    d = capacity_payload(
+        cat, _params({**BASE_REQUEST, "storm_size": 0}), "test-desktop-2ch", ("storm",)
+    )
+    json.dumps(d, allow_nan=False)
+    assert d["axes"][0]["headroom"] is None
+
+
+def test_capacity_axis_subset_is_honoured_and_sanitised(cat):
+    from svrspec.gui import _axes, capacity_payload
+
+    assert _axes({"axes": ["storm", "nope"]}) == ("storm",)
+    assert _axes({"axes": []}) is None
+    assert _axes({"axes": "storm"}) is None
+    assert _axes({}) is None
+
+    d = capacity_payload(cat, _params(BASE_REQUEST), "test-desktop-2ch", ("storm",))
+    assert [a["axis"] for a in d["axes"]] == ["storm"]
+
+
+def test_capacity_route_round_trip(server):
+    status, d = _post(server + "/api/capacity",
+                      {**BASE_REQUEST, "cpu": "test-desktop-2ch", "axes": ["storm"]})
+    assert status == 200
+    assert [a["axis"] for a in d["axes"]] == ["storm"]
+    assert "knee" in d and "limiter" in d
+
+
+def test_capacity_route_rejects_an_unknown_cpu(server):
+    status, d = _post(server + "/api/capacity",
+                      {**BASE_REQUEST, "cpu": "nope", "axes": ["storm"]})
+    assert status == 400
+    assert "unknown cpu id" in d["error"]
+
+
+def test_the_live_recompute_never_runs_a_capacity_search(cat, monkeypatch):
+    """Performance guard.
+
+    One axis is a bracketing search over whole simulated days; four of them run
+    for seconds to tens of seconds. Hanging that off the keystroke-driven
+    recompute would turn the simulator into a spinner, so the two payloads that
+    *do* run on every input change must not touch it.
+    """
+    from svrspec import capacity as capacity_module
+    from svrspec.gui import resource_payload
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a capacity search ran on the live recompute path")
+
+    monkeypatch.setattr(capacity_module, "find_knee", explode)
+    monkeypatch.setattr(capacity_module, "sweep_axes", explode)
+
+    assert size_payload(cat, _params(BASE_REQUEST))["candidates"]
+    assert resource_payload(cat, _params(BASE_REQUEST), "test-amx-8ch")["rows"]
+
+
+def test_the_page_asks_for_capacity_only_from_the_button():
+    """The client half of the same guard.
+
+    Two mentions each: the transport plus its single caller, and the handler
+    plus the click that wires it. A third would mean something started calling
+    it automatically.
+    """
+    assert SERVER_HTML.count("askCapacity") == 2
+    assert SERVER_HTML.count("runCapacity") == 2
+    assert 'addEventListener("click", runCapacity)' in SERVER_HTML
+
+
+def test_the_desktop_page_degrades_when_the_bridge_has_no_capacity_call():
+    """The packaged app's bridge is a fixed surface; an older one must not throw."""
+    assert "window.pywebview.api.capacity" in DESKTOP_HTML
+    assert "데스크톱 빌드에는 과부하 분석이 연결되어 있지 않다" in DESKTOP_HTML
+
+
+def test_the_task_manager_offers_a_tile_per_resource():
+    for name in ("CPU", "메모리", "대역폭", "연산", "동시 처리", "큐"):
+        assert f'"{name}"' in SERVER_HTML, name
+    # Peak and average are drawn as separate lines, not collapsed.
+    assert "bandwidth_peak_pct" in SERVER_HTML and "bandwidth_pct" in SERVER_HTML
+    assert "compute_peak_pct" in SERVER_HTML and "compute_pct" in SERVER_HTML
 
 
 def test_two_columns_survive_the_smallest_window():
@@ -605,3 +823,36 @@ def test_the_rail_scrolls_on_its_own():
     """A long form must not stretch the results column or get clipped."""
     assert "max-height:calc(100vh - var(--header-h)" in SERVER_HTML
     assert "overflow-y:auto" in SERVER_HTML
+
+
+def test_desktop_api_answers_a_capacity_request():
+    """The desktop build must reach the overload search too.
+
+    The page already degrades gracefully when the bridge lacks the method, but
+    degrading is not the goal -- the native app is the primary way this ships
+    on Windows, and "run it in server mode instead" is not an answer for an
+    air-gapped operator who was given an installer.
+    """
+    from svrspec.desktop import Api
+
+    api = Api(Catalog(DATA))
+    request = {**BASE_REQUEST, "cpu": "test-amx-8ch", "axes": ["storm"]}
+
+    payload = api.capacity(request)
+    assert "error" not in payload
+    assert payload["axes"], "an axis was requested and must come back"
+    axis = payload["axes"][0]
+    assert axis["axis"] == "storm"
+    assert axis["points"]
+    assert "limiter" in axis
+
+    # Marshalled as a JSON string, like some webview bridges do.
+    assert "error" not in api.capacity(json.dumps(request))
+
+
+def test_desktop_capacity_reports_bad_input_instead_of_raising():
+    from svrspec.desktop import Api
+
+    api = Api(Catalog(DATA))
+    assert "error" in api.capacity({**BASE_REQUEST, "cpu": "no-such-cpu"})
+    assert "error" in api.capacity([1, 2, 3])
