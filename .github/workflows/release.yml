@@ -1,0 +1,144 @@
+name: release
+
+# Tag a version and the installers build, get their checksums published, and
+# appear on the Releases page. Installed copies find them from there.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.12, not 3.13: cx_Freeze's MSI build needs msilib, which 3.13
+          # removed from the standard library.
+          python-version: "3.12"
+
+      - name: Read the version out of the package
+        id: version
+        shell: bash
+        run: |
+          v=$(python -c "import svrspec; print(svrspec.__version__)")
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "building v$v"
+
+      - name: Refuse to release if the tag disagrees with the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg="${{ steps.version.outputs.value }}"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag != svrspec.__version__ $pkg" >&2
+            echo "bump svrspec/__init__.py before tagging" >&2
+            exit 1
+          fi
+
+      - run: python -m pip install --upgrade pip pytest cx_Freeze pywebview
+
+      - name: pytest
+        run: python -m pytest -q
+        env:
+          SVRSPEC_NO_UPDATE_CHECK: "1"
+
+      - name: Draw the icon
+        run: python installer/make_icon.py
+
+      - name: Build the folder payload and the MSI
+        shell: pwsh
+        run: |
+          # msilib's CAB writer fails with "FCI error 4" when TEMP contains
+          # non-ASCII characters. Pin it somewhere safe regardless of runner.
+          New-Item -ItemType Directory -Force -Path C:\svrspec-temp | Out-Null
+          $env:TEMP = "C:\svrspec-temp"
+          $env:TMP  = "C:\svrspec-temp"
+          python installer/setup_cxfreeze.py build_exe
+          python installer/setup_cxfreeze.py bdist_msi
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build setup.exe
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = (Get-ChildItem "C:\Program Files*" -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1).FullName
+          }
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          & $iscc "installer\svrspec.iss"
+
+      - name: Smoke-test what we are about to ship
+        shell: pwsh
+        run: |
+          $b = "build\exe.win-amd64-3.12"
+          & "$b\svrspec-cli.exe" catalog validate
+          if ($LASTEXITCODE -ne 0) { throw "packaged CLI failed" }
+          $p = Start-Process "$b\svrspec.exe" -PassThru
+          Start-Sleep -Seconds 12
+          $p.Refresh()
+          if ($p.HasExited) { throw "desktop app exited immediately (code $($p.ExitCode))" }
+          Write-Output "window title: $($p.MainWindowTitle)"
+          Stop-Process -Id $p.Id -Force
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Set-Location dist
+          # sha256sum-compatible: "<digest>  <name>", which update.py parses.
+          Get-ChildItem -File | Where-Object { $_.Extension -in ".exe", ".msi" } | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS
+          Get-Content SHA256SUMS
+
+      - name: Portable air-gap bundle
+        run: python -m svrspec.cli bundle --out dist/svrspec-${{ steps.version.outputs.value }}-airgap.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            dist/*.exe
+            dist/*.msi
+            dist/*.zip
+            dist/SHA256SUMS
+
+  publish:
+    needs: windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: dist
+      - run: ls -la dist
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: svrspec ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/*.exe
+            dist/*.msi
+            dist/*.zip
+            dist/SHA256SUMS

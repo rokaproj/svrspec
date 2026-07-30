@@ -1,0 +1,65 @@
+{
+  "schema": "quants/v1",
+  "_comment": [
+    "Effective file-size bits-per-weight for llama.cpp quantization types.",
+    "These are whole-file averages: K-quants keep some tensors (output, attn_v,",
+    "parts of ffn_down) at higher precision, so the average sits above the",
+    "nominal block width. Models with very large vocabularies (Llama 3 at",
+    "128k, Gemma at 256k) land a few percent higher again because the",
+    "embedding and output matrices are a big share of the parameters.",
+    "Q4_K_M is pinned to a real measurement: Meta-Llama-3.1-8B-Instruct-Q4_K_M",
+    "is 4.939e9 bytes for 8.03e9 params = 4.92 bpw.",
+    "`svrspec verify` re-measures against whatever GGUF files are present and",
+    "reports the error, so these stay honest."
+  ],
+  "entries": [
+    {
+      "id": "Q2_K",
+      "bits_per_weight": 3.35,
+      "quality": "degraded",
+      "notes": "Only worth considering when RAM is the hard constraint; noticeably worse instruction following."
+    },
+    {
+      "id": "Q3_K_M",
+      "bits_per_weight": 3.91,
+      "quality": "degraded",
+      "notes": "Measurable quality loss on structured extraction tasks."
+    },
+    {
+      "id": "IQ4_XS",
+      "bits_per_weight": 4.32,
+      "quality": "good",
+      "notes": "Smaller than Q4_K_M at similar quality, but slower on CPU: the i-quant dot products are more expensive."
+    },
+    {
+      "id": "Q4_K_M",
+      "bits_per_weight": 4.9,
+      "quality": "good",
+      "notes": "Default choice for CPU deployment. Best quality-per-byte-read, and decode is bandwidth bound."
+    },
+    {
+      "id": "Q5_K_M",
+      "bits_per_weight": 5.69,
+      "quality": "near-lossless",
+      "notes": "About 16% more bytes read per token than Q4_K_M, so decode is ~16% slower."
+    },
+    {
+      "id": "Q6_K",
+      "bits_per_weight": 6.56,
+      "quality": "near-lossless",
+      "notes": "Rarely justified on CPU: costs a third more bandwidth than Q4_K_M for a barely measurable quality gain."
+    },
+    {
+      "id": "Q8_0",
+      "bits_per_weight": 8.5,
+      "quality": "lossless",
+      "notes": "Useful as a quality reference baseline, and fast per-byte on AVX-512-VNNI / AMX-INT8 for prefill."
+    },
+    {
+      "id": "F16",
+      "bits_per_weight": 16.0,
+      "quality": "lossless",
+      "notes": "Only for accuracy comparison. Halves decode speed versus Q8_0 and quadruples it versus Q4_K_M."
+    }
+  ]
+}

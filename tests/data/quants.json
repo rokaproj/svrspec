@@ -1,0 +1,9 @@
+{
+  "schema": "quants/v1",
+  "_comment": "Fixture quants. Q4_K_M matches the shipped catalogue so the dev-box reproduction test is meaningful.",
+  "entries": [
+    {"id": "Q4_K_M", "bits_per_weight": 4.9, "quality": "good"},
+    {"id": "Q8_0", "bits_per_weight": 8.5, "quality": "lossless"},
+    {"id": "F16", "bits_per_weight": 16.0, "quality": "lossless"}
+  ]
+}

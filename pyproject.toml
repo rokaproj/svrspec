@@ -1,0 +1,53 @@
+[project]
+name = "svrspec"
+version = "0.1.0"
+description = "GPU 서빙 서버 스펙 산정 시뮬레이터 — 모델을 넣으면 서버 스펙을 추천한다"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "top00an" }]
+keywords = ["llm", "capacity-planning", "server-sizing", "llama.cpp", "simulator"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Systems Administration",
+]
+# The engine is standard-library only on purpose: it has to run unmodified on
+# the air-gapped box it is sizing. `svrspec app` (the native window) needs
+# pywebview, which the Windows installers bundle.
+dependencies = []
+
+[project.optional-dependencies]
+app = ["pywebview>=5"]
+
+[project.urls]
+Homepage = "https://github.com/rokaproj/svrspec"
+Source = "https://github.com/rokaproj/svrspec"
+Releases = "https://github.com/rokaproj/svrspec/releases"
+Changelog = "https://github.com/rokaproj/svrspec/blob/main/CHANGELOG.md"
+
+[project.scripts]
+svrspec = "svrspec.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["svrspec*"]
+
+[tool.setuptools.package-data]
+svrspec = ["catalog/*.json"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

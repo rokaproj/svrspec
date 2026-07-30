@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # The engine is standard-library only, so it must pass on both platforms.
+    # Windows is not optional here: the packaged app ships from it.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip pytest
+      - name: pytest
+        run: python -m pytest -q
+        env:
+          # Never let a test reach for the network.
+          SVRSPEC_NO_UPDATE_CHECK: "1"
+
+  catalog:
+    # The catalogue is the deliverable's evidence base; a broken row must fail
+    # the build, not surface in a customer's spec sheet.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: catalog validate
+        run: python -m svrspec.cli catalog validate
+      - name: end-to-end sizing
+        run: |
+          python -m svrspec.cli recommend --model exaone-3.5-2.4b-instruct --html /tmp/r.html
+          test -s /tmp/r.html
+          python -m svrspec.cli fit --cpu epyc-9354 > /dev/null
+          python -m svrspec.cli bundle --out /tmp/bundle.zip
+      - name: bundle runs with nothing installed
+        run: |
+          mkdir -p /tmp/airgap && cd /tmp/airgap
+          python -c "import zipfile; zipfile.ZipFile('/tmp/bundle.zip').extractall('.')"
+          python -m svrspec.cli catalog validate

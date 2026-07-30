@@ -1,0 +1,54 @@
+{
+  "schema": "memory/v1",
+  "_comment": "Fixture memory options. The 2 DPC rows carry the DDR5 derate that the engine must not ignore.",
+  "entries": [
+    {
+      "id": "ddr4-2666-2dpc",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2666,
+      "dimms_per_channel": 2,
+      "effective_mts": 2666,
+      "dimm_gb": 16,
+      "ecc": false,
+      "kind": "UDIMM",
+      "source": "unverified",
+      "notes": "Matches the development box the default coefficients were measured on: 4 sticks across 2 channels, running at 2667 MT/s."
+    },
+    {
+      "id": "ddr4-3200-1dpc",
+      "ddr_gen": "DDR4",
+      "rated_mts": 3200,
+      "dimms_per_channel": 1,
+      "effective_mts": 3200,
+      "dimm_gb": 32,
+      "source": "unverified"
+    },
+    {
+      "id": "ddr4-3200-2dpc",
+      "ddr_gen": "DDR4",
+      "rated_mts": 3200,
+      "dimms_per_channel": 2,
+      "effective_mts": 2933,
+      "dimm_gb": 32,
+      "source": "unverified"
+    },
+    {
+      "id": "ddr5-4800-1dpc",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4800,
+      "dimms_per_channel": 1,
+      "effective_mts": 4800,
+      "dimm_gb": 64,
+      "source": "unverified"
+    },
+    {
+      "id": "ddr5-4800-2dpc",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4800,
+      "dimms_per_channel": 2,
+      "effective_mts": 4400,
+      "dimm_gb": 64,
+      "source": "unverified"
+    }
+  ]
+}

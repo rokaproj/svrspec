@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.iss text eol=crlf working-tree-encoding=UTF-8
+*.ico binary
+*.msi binary
+*.exe binary

@@ -1,0 +1,123 @@
+{
+  "schema": "coefficients/v1",
+  "_comment": [
+    "How much of each theoretical ceiling llama.cpp actually reaches.",
+    "",
+    "Catalogue data, not a runtime measurement. The simulator never loads the",
+    "local CPU: it predicts for servers it has no access to.",
+    "",
+    "Every row carries a confidence level, and the reported uncertainty is built",
+    "from the confidence of the rows a prediction actually used.",
+    "",
+    "PRIMARY SOURCE for the server-class rows: llama.cpp discussion #11733,",
+    "'Dual Epyc Genoa/Turin token generation performance bottlenecks', which",
+    "publishes STREAM bandwidth plus pp512/tg128 for Llama-3.1-70B F16 on three",
+    "measured platforms:",
+    "  P0  1x EPYC 9374F  32C, 12x DDR5-4800 (NPS2 half = 230.4 GB/s theoretical)",
+    "  P1  2x EPYC 9175F  16C, 16x DDR5-6400 (409.6 GB/s per socket)",
+    "  P2  2x EPYC 9654   96C, 24x DDR5-4800 (460.8 GB/s per socket)",
+    "",
+    "Llama-3.1-70B at F16 is 70.6e9 params x 2 bytes = 141.2 GB read per token,",
+    "so single-socket tg128 converts straight to achieved read bandwidth:",
+    "  P0  1.25 t/s x 141.2 GB = 176 GB/s of 230.4 -> 0.77",
+    "  P1  2.35 t/s x 141.2 GB = 332 GB/s of 409.6 -> 0.81",
+    "  P2  2.19 t/s x 141.2 GB = 309 GB/s of 460.8 -> 0.67",
+    "The same discussion measures STREAM at 78-92% of theoretical, so llama.cpp",
+    "is reaching ~86% of what the platform can actually stream.",
+    "",
+    "And for prefill, eta_compute x FLOP_per_cycle = 2 x params x pp512 / (cores x GHz):",
+    "  P0  2 x 70.6 x 12.92 / (32 x 3.85) = 14.8",
+    "  P2  2 x 70.6 x 28.38 / (96 x 2.75) = 15.2",
+    "Two independent Zen 4 platforms agreeing within 3% is a real datum.",
+    "  P1 (Zen 5, full-width AVX-512) gives 45.2 -- 3x higher -- so the value",
+    "  below is conservative for Turin and later."
+  ],
+  "entries": [
+    {
+      "id": "eta-bw-ddr4",
+      "kind": "eta_bw",
+      "key": "DDR4",
+      "value": 0.70,
+      "confidence": "measured",
+      "source": "unverified",
+      "notes": "2ch DDR4-2667, Llama-3.1-8B Q4_K_M at 6.07 tok/s on the development box. Sits inside the 0.67-0.81 band the server platforms show, so the two independent measurements agree."
+    },
+    {
+      "id": "eta-bw-ddr5",
+      "kind": "eta_bw",
+      "key": "DDR5",
+      "value": 0.72,
+      "confidence": "derived",
+      "source": "third_party_db",
+      "source_url": "https://github.com/ggml-org/llama.cpp/discussions/11733",
+      "notes": "Measured 0.67 / 0.77 / 0.81 across EPYC 9654, 9374F and 9175F single-socket; 0.72 is the middle of that band. Was 0.65 by estimate before the data was found -- the estimate was too pessimistic."
+    },
+    {
+      "id": "eta-bw-mrdimm",
+      "kind": "eta_bw",
+      "key": "MRDIMM",
+      "value": 0.60,
+      "confidence": "estimate",
+      "source": "unverified",
+      "notes": "No published llama.cpp figures on MRDIMM. Its doubled peak is the hardest to convert into achieved streaming bandwidth, so this stays deliberately conservative."
+    },
+    {
+      "id": "eta-compute-avx2",
+      "kind": "eta_compute",
+      "key": "avx2",
+      "value": 0.355,
+      "confidence": "derived",
+      "source": "unverified",
+      "notes": "From 25.48 tok/s prompt processing on the development box, assuming a 3.6 GHz sustained all-core clock on the i7-12700. The clock is an assumption, hence derived rather than measured."
+    },
+    {
+      "id": "eta-compute-avx512",
+      "kind": "eta_compute",
+      "key": "avx512",
+      "value": 0.234,
+      "confidence": "derived",
+      "source": "third_party_db",
+      "source_url": "https://github.com/ggml-org/llama.cpp/discussions/11733",
+      "notes": "eta x FLOP_per_cycle measured at 14.8 and 15.2 on two Zen 4 platforms; 15.0 / 64 = 0.234. Conservative twice over: Zen 4 executes AVX-512 on double-pumped 256-bit units so its real per-cycle width is nearer 32 than 64, and Zen 5 and Intel's full-width AVX-512 measure roughly 3x higher. Was 0.30 by estimate."
+    },
+    {
+      "id": "eta-compute-amx-bf16",
+      "kind": "eta_compute",
+      "key": "amx-bf16",
+      "value": 0.044,
+      "confidence": "estimate",
+      "source": "unverified",
+      "notes": "No published llama.cpp pp512 figures on an AMX part were found, so this remains the softest number in the model and the reason AMX predictions carry the widest error bars. Anchored to the AVX-512 datum instead of to AMX's 1024 flop/cycle tile peak: 0.044 x 1024 = 45, i.e. AMX assumed to deliver 3x the per-core prefill of Zen 4 AVX-512 (15.0). Reported llama.cpp AMX prefill gains are in the 2-4x range. The previous 0.10 implied a 6.8x advantage, which was not defensible."
+    },
+    {
+      "id": "per-core-bw",
+      "kind": "per_core_bw_gbs",
+      "key": "*",
+      "value": 25.0,
+      "confidence": "derived",
+      "source": "third_party_db",
+      "source_url": "https://github.com/ggml-org/llama.cpp/discussions/11733",
+      "notes": "A 16-core EPYC 9175F pulled 332 GB/s = 20.7 GB/s per core while still DRAM-limited, so the per-core ceiling is above that; 25 is the conservative reading. Was 20.0 by estimate, which the measurement disproves -- 16 x 20 = 320 is below the 332 actually observed. Already an achieved figure, so eta_bw is not applied on top of it."
+    },
+    {
+      "id": "dual-socket-efficiency",
+      "kind": "dual_socket_efficiency",
+      "key": "*",
+      "value": 0.91,
+      "confidence": "derived",
+      "source": "third_party_db",
+      "source_url": "https://github.com/ggml-org/llama.cpp/discussions/11733",
+      "notes": "Dense Llama-3.1-70B token generation scaled 1.90 / 1.83 / 1.81 times going from one socket to two on the three platforms -- 0.90 to 0.95 per socket. Was 0.60 by estimate, badly wrong: llama.cpp distributes large matrices across sockets well. NUMA placement still matters, and the same discussion documents remote-access overhead when tensors are laid out badly."
+    },
+    {
+      "id": "dual-socket-efficiency-moe",
+      "kind": "dual_socket_efficiency",
+      "key": "moe",
+      "value": 0.75,
+      "confidence": "derived",
+      "source": "third_party_db",
+      "source_url": "https://github.com/ggml-org/llama.cpp/discussions/11733",
+      "notes": "MoE scales much worse across sockets than dense: Mixtral 8x22B generation scaled 1.85 / 1.56 / 1.46 (0.92 / 0.78 / 0.73 per socket), because expert matrices are small enough that synchronisation overhead dominates. DeepSeek V3 was worse again at 1.02-1.11. So a second socket buys far less for a MoE deployment."
+    }
+  ]
+}

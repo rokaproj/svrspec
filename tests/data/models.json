@@ -1,0 +1,50 @@
+{
+  "schema": "models/v1",
+  "_comment": "Fixture catalogue for unit tests. Small on purpose and independent of the shipped catalogue, so engine tests do not break when the real data changes.",
+  "entries": [
+    {
+      "id": "test-8b-gqa",
+      "name": "Test 8B GQA",
+      "family": "Test",
+      "params_b": 8.03,
+      "n_layer": 32,
+      "n_embd": 4096,
+      "n_head": 32,
+      "n_kv_head": 8,
+      "n_vocab": 128256,
+      "ctx_train": 131072,
+      "source": "unverified",
+      "notes": "Mirrors Llama-3.1-8B geometry: KV works out to 128 KiB/token."
+    },
+    {
+      "id": "test-3b",
+      "name": "Test 3B",
+      "family": "Test",
+      "params_b": 3.09,
+      "n_layer": 36,
+      "n_embd": 2048,
+      "n_head": 16,
+      "n_kv_head": 2,
+      "n_vocab": 151936,
+      "ctx_train": 32768,
+      "korean": true,
+      "source": "unverified"
+    },
+    {
+      "id": "test-30b-moe",
+      "name": "Test 30B A3B MoE",
+      "family": "Test",
+      "params_b": 30.5,
+      "active_params_b": 3.3,
+      "n_layer": 48,
+      "n_embd": 2048,
+      "n_head": 32,
+      "n_kv_head": 4,
+      "n_vocab": 151936,
+      "ctx_train": 32768,
+      "head_dim": 128,
+      "source": "unverified",
+      "notes": "head_dim decoupled from n_embd/n_head on purpose."
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "schema": "cpus/v1",
+  "_comment": "Fixture CPUs spanning the three cases that change the physics: narrow-channel AVX2 desktop, wide-channel AVX-512, and AMX.",
+  "entries": [
+    {
+      "id": "test-desktop-2ch",
+      "vendor": "Intel",
+      "family": "Test Desktop",
+      "model": "Desktop 12C 2ch",
+      "cores": 12,
+      "threads": 20,
+      "base_ghz": 2.1,
+      "all_core_turbo_ghz": 3.6,
+      "max_turbo_ghz": 4.9,
+      "isa": [
+        "avx2"
+      ],
+      "mem_channels": 2,
+      "ddr_gen": "DDR4",
+      "max_ddr_mts": 3200,
+      "max_mem_gb": 128,
+      "sockets_max": 1,
+      "l3_mb": 25.0,
+      "tdp_w": 65,
+      "source": "unverified",
+      "notes": "Stands in for the development box the calibration came from.",
+      "passmark_multithread": 25000,
+      "socket": "LGA1700"
+    },
+    {
+      "id": "test-avx512-8ch",
+      "vendor": "AMD",
+      "family": "Test EPYC",
+      "model": "EPYC 32C 12ch",
+      "cores": 32,
+      "threads": 64,
+      "base_ghz": 2.4,
+      "all_core_turbo_ghz": 3.1,
+      "max_turbo_ghz": 3.8,
+      "isa": [
+        "avx2",
+        "avx512",
+        "avx512-vnni"
+      ],
+      "mem_channels": 12,
+      "ddr_gen": "DDR5",
+      "max_ddr_mts": 4800,
+      "max_mem_gb": 6144,
+      "sockets_max": 2,
+      "l3_mb": 256.0,
+      "tdp_w": 280,
+      "source": "unverified",
+      "passmark_multithread": 57500,
+      "socket": "SP5"
+    },
+    {
+      "id": "test-amx-8ch",
+      "vendor": "Intel",
+      "family": "Test Xeon AMX",
+      "model": "Xeon 16C AMX",
+      "cores": 16,
+      "threads": 32,
+      "base_ghz": 2.0,
+      "all_core_turbo_ghz": 2.7,
+      "max_turbo_ghz": 3.9,
+      "isa": [
+        "avx2",
+        "avx512",
+        "avx512-vnni",
+        "avx512-bf16",
+        "amx-bf16",
+        "amx-int8"
+      ],
+      "mem_channels": 8,
+      "ddr_gen": "DDR5",
+      "max_ddr_mts": 4800,
+      "max_mem_gb": 4096,
+      "sockets_max": 2,
+      "l3_mb": 45.0,
+      "tdp_w": 150,
+      "source": "unverified",
+      "passmark_multithread": 25000,
+      "socket": "FCLGA4677"
+    },
+    {
+      "id": "test-lowcore-8ch",
+      "vendor": "Intel",
+      "family": "Test Entry",
+      "model": "Entry 8C 8ch",
+      "cores": 8,
+      "threads": 16,
+      "base_ghz": 2.0,
+      "all_core_turbo_ghz": 2.8,
+      "max_turbo_ghz": 3.4,
+      "isa": [
+        "avx2",
+        "avx512"
+      ],
+      "mem_channels": 8,
+      "ddr_gen": "DDR5",
+      "max_ddr_mts": 4800,
+      "max_mem_gb": 64,
+      "sockets_max": 1,
+      "l3_mb": 12.0,
+      "tdp_w": 65,
+      "source": "unverified",
+      "notes": "Few cores against wide memory: the core-bandwidth-limited case, like a low-core Xeon Silver. Also has a low RAM ceiling to exercise that failure path.",
+      "passmark_multithread": 13000,
+      "socket": "FCLGA4677"
+    }
+  ]
+}
