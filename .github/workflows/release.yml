@@ -93,6 +93,22 @@ jobs:
           $b = "build\exe.win-amd64-3.12"
           & "$b\svrspec-cli.exe" catalog validate
           if ($LASTEXITCODE -ne 0) { throw "packaged CLI failed" }
+
+          # pywebview injects its bridge by globbing webview/js/**/*.js off the
+          # filesystem. If cx_Freeze zipped that package the glob matches
+          # nothing, `pywebviewready` never fires, and the window still opens --
+          # it just renders a page whose dropdowns never fill. A shipped build
+          # once did exactly that, so check the files are on disk rather than
+          # trusting that the window appeared.
+          $js = Get-ChildItem "$b\lib\webview\js" -Filter *.js -Recurse -ErrorAction SilentlyContinue
+          if (-not $js -or $js.Count -lt 4) {
+            throw "webview JS bridge is missing from the build ($($js.Count) files). Check zip_exclude_packages."
+          }
+          foreach ($need in @("api.js", "finish.js")) {
+            if (-not ($js.Name -contains $need)) { throw "webview/js/$need is missing" }
+          }
+          Write-Output "webview bridge: $($js.Count) JS files present"
+
           $p = Start-Process "$b\svrspec.exe" -PassThru
           Start-Sleep -Seconds 12
           $p.Refresh()

@@ -46,8 +46,19 @@ build_exe_options = {
         (str(ROOT / "svrspec" / "catalog"), "lib/svrspec/catalog"),
         (str(ROOT / "README.md"), "README.md"),
     ],
-    # Keep the package on disk so the catalogue paths resolve and stay readable.
-    "zip_exclude_packages": ["svrspec"],
+    # Both of these must stay unzipped, and for the same reason: they read their
+    # own data files off the filesystem.
+    #
+    #   svrspec   the catalogue loader resolves JSON with Path(__file__).parent,
+    #             and a delivery tool should let the customer open those files.
+    #   webview   pywebview injects its bridge by globbing webview/js/**/*.js
+    #             (see webview.util.load_js_files). Inside the zip that glob
+    #             matches nothing, so api.js never runs, window.pywebview is
+    #             never created, `pywebviewready` never fires -- and the window
+    #             renders the page but no dropdown ever fills, because the
+    #             bridge the page talks through does not exist. It fails
+    #             silently: the import succeeds and the window opens.
+    "zip_exclude_packages": ["svrspec", "webview"],
     "include_msvcr": True,
     "optimize": 1,
 }

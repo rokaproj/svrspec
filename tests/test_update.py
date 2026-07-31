@@ -191,3 +191,56 @@ def test_update_payload_shape_when_available(monkeypatch):
     d = update_payload()
     assert d["available"] and d["tag"] == "v9.9.9"
     assert d["installer"] == "svrspec-9-setup.exe"
+
+
+def test_the_packaging_keeps_pywebview_unzipped():
+    """pywebview reads its own JS off the filesystem, so it cannot be zipped.
+
+    `webview.util.load_js_files` globs `webview/js/**/*.js` and concatenates
+    what it finds. Inside cx_Freeze's library.zip that glob matches nothing:
+    `api.js` never runs, `window.pywebview` is never created, `pywebviewready`
+    never fires. The import still succeeds and the window still opens -- it
+    just renders a page whose dropdowns never fill and whose bridge times out.
+    A release shipped exactly that.
+
+    The same rule covers `svrspec` itself, whose catalogue loader resolves JSON
+    with `Path(__file__).parent`.
+    """
+    import ast
+    from pathlib import Path
+
+    setup_py = Path(__file__).resolve().parent.parent / "installer" / "setup_cxfreeze.py"
+    tree = ast.parse(setup_py.read_text(encoding="utf-8"))
+
+    # Only this one key is read: the dict also holds `str(ROOT / ...)` calls,
+    # which literal_eval cannot evaluate and which this test does not need.
+    unzipped: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "build_exe_options" for t in node.targets
+        )):
+            continue
+        for key, value in zip(node.value.keys, node.value.values):
+            if isinstance(key, ast.Constant) and key.value == "zip_exclude_packages":
+                unzipped = set(ast.literal_eval(value))
+    assert unzipped, "zip_exclude_packages not found in build_exe_options"
+    assert "webview" in unzipped, (
+        "pywebview must stay on disk or its JS bridge never loads"
+    )
+    assert "svrspec" in unzipped, "the catalogue is read from disk"
+
+
+def test_the_release_smoke_test_checks_the_bridge_files():
+    """Opening a window proves nothing; the bridge can be dead behind it.
+
+    The smoke test used to assert only that the process was still alive after
+    twelve seconds, which a build with no JS bridge passes.
+    """
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parent.parent / ".github" / "workflows" / "release.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "webview\\js" in workflow or "webview/js" in workflow
+    assert "api.js" in workflow and "finish.js" in workflow
