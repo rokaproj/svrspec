@@ -2175,3 +2175,60 @@ def test_the_grid_reports_ram_per_row_not_just_once():
     assert max(rams) > min(rams), rams
     # The heaviest cell on a 64 GB board is the one that must be flagged.
     assert any(r["fits"] is False for r in rows), rams
+
+
+def test_the_caller_can_choose_its_own_operating_point():
+    """The whole point of the screen is to see *your* batch and context.
+
+    The axes were fixed on the server to stop a browser asking for a
+    four-hundred point sweep. That concern is real, but refusing every
+    override was too strict: 16k context at batch 48 is something people
+    actually run, and the grid could not show it.
+    """
+    payload = _mb(
+        Catalog(DATA),
+        {**BASE_REQUEST, "model": "test-8b-gqa", "cpu": "test-amx-8ch",
+         "dimm_gb": 8, "dimm_count": 8},
+        {"batches": [1, 48], "contexts": [4096, 65536]},
+    )
+    assert payload["batches"] == [1, 48]
+    assert payload["contexts"] == [4096, 65536]
+    assert {(r["batch"], r["ctx_tokens"]) for r in payload["throughput"]} == {
+        (1, 4096), (1, 65536), (48, 4096), (48, 65536)
+    }
+
+
+def test_an_axis_override_is_clamped_deduplicated_and_capped():
+    """Accepting overrides may not mean accepting a denial of service."""
+    from svrspec.gui import MB_AXIS_MAX_POINTS, MB_BATCHES, _mb_axis
+
+    # Out of range on both ends, duplicated, unordered, and far too long.
+    got = _mb_axis({"batches": [0, -5, 4, 4, 99999] + list(range(1, 40))},
+                   "batches", MB_BATCHES)
+    assert len(got) <= MB_AXIS_MAX_POINTS
+    assert got == tuple(sorted(set(got)))
+    assert min(got) >= 1 and max(got) <= 512
+
+    # Junk falls back rather than raising: this runs behind a form.
+    assert _mb_axis({"batches": "nonsense"}, "batches", MB_BATCHES) == MB_BATCHES
+    assert _mb_axis({"batches": []}, "batches", MB_BATCHES) == MB_BATCHES
+    assert _mb_axis({"batches": ["x", None]}, "batches", MB_BATCHES) == MB_BATCHES
+    assert _mb_axis({}, "batches", MB_BATCHES) == MB_BATCHES
+
+
+def test_the_os_profile_is_selectable_and_changes_the_memory():
+    """OS is a sizing input, not a constant baked into the engine."""
+    request = {**BASE_REQUEST, "model": "test-8b-gqa", "cpu": "test-amx-8ch",
+               "dimm_gb": 64, "dimm_count": 8}
+    axes = {"batches": [1], "contexts": [4096]}
+    lean = _mb(Catalog(DATA), request, {**axes, "os_name": "linux-container"})
+    fat = _mb(Catalog(DATA), request, {**axes, "os_name": "windows-desktop"})
+
+    assert lean["os_name"] == "linux-container"
+    assert lean["throughput"][0]["ram_gb"] < fat["throughput"][0]["ram_gb"]
+    # Silicon is unchanged by the operating system.
+    assert lean["throughput"][0]["gen_tps"] == fat["throughput"][0]["gen_tps"]
+
+    # An unknown name falls back instead of failing the run.
+    unknown = _mb(Catalog(DATA), request, {**axes, "os_name": "plan9"})
+    assert unknown["os_name"] is None

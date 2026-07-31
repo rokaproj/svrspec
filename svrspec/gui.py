@@ -1243,11 +1243,82 @@ TRAIN_LABEL = {"full": "full 파인튜닝", "lora": "LoRA", "qlora": "QLoRA"}
 #: reading-comfort threshold, not a measurement.
 READABLE_TPS = 10.0
 
-#: The grid axes, fixed on the server. A browser cannot ask for a four-hundred
-#: point sweep, and the columns the page labels are always the ones it drew.
+#: The grid axes the page draws when it asks for nothing else.
 MB_BATCHES = (1, 2, 4, 8, 16, 32)
 MB_CONTEXTS = (512, 2048, 4096, 8192, 16384)
 MB_USERS = (1, 2, 4, 8, 16, 32, 64)
+
+#: A caller may replace an axis, but not with anything it likes. Each value is
+#: clamped and each axis is capped in length, because the grid is a product of
+#: two of them and a browser asking for a four-hundred point sweep costs the
+#: server four hundred predictions. Refusing overrides outright was the earlier
+#: rule and it was too strict: the whole point of the screen is to see *your*
+#: operating point, and 16k context at batch 48 is a real one somebody runs.
+MB_AXIS_LIMITS = {
+    "batches": (1, 512),
+    "contexts": (128, 1_048_576),
+    "users": (1, 4096),
+}
+MB_AXIS_MAX_POINTS = 12
+
+
+def _mb_os(raw: dict) -> str | None:
+    """Which operating system profile to size against.
+
+    None means "whatever the engine defaults to", which keeps a request that
+    never heard of this field behaving exactly as before.
+    """
+    from .memory import OS_PROFILES
+
+    name = raw.get("os_name")
+    return str(name) if name in OS_PROFILES else None
+
+
+def _mb_os_block(os_name: str | None) -> dict:
+    """The operating system assumption, stated where the numbers are read.
+
+    Carries `overrun` because the two failure modes are not interchangeable:
+    a host that runs out of memory gets slow, a container that runs out is
+    killed, and a reader deciding how much slack to buy needs to know which
+    one they are buying against.
+    """
+    from .memory import os_profile
+
+    profile = os_profile(os_name)
+    return {
+        "id": profile.id,
+        "label": profile.label,
+        "runtime_gb": _r(profile.runtime_gb, 2),
+        "headroom": _r(profile.headroom, 2),
+        "hard_limit": bool(profile.hard_limit),
+        "overrun": profile.overrun_consequence,
+        "note": profile.note,
+        "chosen": os_name is not None,
+    }
+
+
+def _mb_axis(raw: dict, key: str, fallback: tuple[int, ...]) -> tuple[int, ...]:
+    """One axis from the request, clamped, deduplicated and length-capped.
+
+    Anything unusable falls back to the default rather than raising: this runs
+    behind a form, and a typo in one field should not lose the whole run.
+    """
+    wanted = raw.get(key)
+    if not isinstance(wanted, (list, tuple)):
+        return fallback
+    low, high = MB_AXIS_LIMITS[key]
+    seen: list[int] = []
+    for item in wanted:
+        try:
+            value = int(float(item))
+        except (TypeError, ValueError):
+            continue
+        value = max(low, min(value, high))
+        if value not in seen:
+            seen.append(value)
+        if len(seen) >= MB_AXIS_MAX_POINTS:
+            break
+    return tuple(sorted(seen)) or fallback
 
 #: Same rule as `LIMITS`: clamped, never trusted. `output_tokens` is not here on
 #: purpose -- it is already a workload field, and the generation length that
@@ -1290,6 +1361,11 @@ def _throughput_row(pt) -> dict:
         "ttft_s": _r(_mb_ttft(pt), 2),
         "prefill_tps": _r(pt.prefill_tps, 1),
         "decode_tps_single": _r(pt.decode_tps_single, 2),
+        # The same number under the name the page prints. Both keys ship so the
+        # existing client code keeps working, and so nobody reading the payload
+        # has to know that "Generation tok/s" and `decode_tps_single` are one
+        # thing.
+        "gen_tps": _r(getattr(pt, "gen_tps", None) or pt.decode_tps_single, 2),
         "decode_tps_total": _r(pt.decode_tps_total, 2),
         "prefill_bound": prefill,
         "decode_bound": decode,
@@ -1420,6 +1496,10 @@ def modelbench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict | None = No
     machine = _lab_block(cat, vm, asm)
     output_tokens = int(p["output_tokens"])
     train_samples = _mb_number(raw, "train_samples")
+    batches = _mb_axis(raw, "batches", MB_BATCHES)
+    contexts = _mb_axis(raw, "contexts", MB_CONTEXTS)
+    users = _mb_axis(raw, "users", MB_USERS)
+    os_name = _mb_os(raw)
 
     base = {
         "machine": machine,
@@ -1429,9 +1509,11 @@ def modelbench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict | None = No
         "model_name": machine["model"]["name"],
         "quant_id": machine["model"]["quant"],
         "hardware": machine["headline"],
-        "batches": list(MB_BATCHES),
-        "contexts": list(MB_CONTEXTS),
-        "users": list(MB_USERS),
+        "batches": list(batches),
+        "contexts": list(contexts),
+        "users": list(users),
+        "os_name": os_name,
+        "os": _mb_os_block(os_name),
         "output_tokens": output_tokens,
         "train_samples": train_samples,
         "readable_tps": READABLE_TPS,
@@ -1455,8 +1537,9 @@ def modelbench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict | None = No
     from .modelbench import bench_model
 
     mb = bench_model(
-        asm, batches=MB_BATCHES, contexts=MB_CONTEXTS, users=MB_USERS,
+        asm, batches=batches, contexts=contexts, users=users,
         output_tokens=output_tokens, train_samples=train_samples,
+        os_name=os_name,
     )
     base["model_name"] = str(mb.model_name)
     base["quant_id"] = str(mb.quant_id)

@@ -160,3 +160,97 @@ def test_an_unknown_os_falls_back_rather_than_raising():
 
     assert os_profile("no-such-os").id == DEFAULT_OS_PROFILE
     assert os_profile(None).id == DEFAULT_OS_PROFILE
+
+
+def test_a_hard_limit_is_sized_more_generously_than_a_soft_one(model_8b, q4):
+    """Overrunning a cgroup kills the process; overrunning a host slows it.
+
+    Those are not one kind of bad, and a single headroom number cannot say
+    which is which. The container profile frees the most memory and punishes
+    overrun the hardest, so it gets the largest headroom -- sizing it tightest
+    because its baseline is lightest gets the trade backwards.
+    """
+    from svrspec.memory import OS_PROFILES, size_memory
+    from svrspec.types import TokenProfile
+
+    container = OS_PROFILES["linux-container"]
+    headless = OS_PROFILES["linux-headless"]
+
+    assert container.hard_limit is True
+    assert headless.hard_limit is False
+    assert container.runtime_gb < headless.runtime_gb      # lighter baseline
+    assert container.headroom > headless.headroom          # larger margin
+
+    tokens = TokenProfile()
+    in_container = size_memory(model_8b, q4, tokens, slots=4, os_name="linux-container")
+    on_host = size_memory(model_8b, q4, tokens, slots=4, os_name="linux-headless")
+
+    # Less resident, but provisioned for more -- that is the point.
+    assert in_container.subtotal_gb < on_host.subtotal_gb
+    assert in_container.recommended_gb > on_host.recommended_gb
+
+
+def test_every_profile_states_what_happens_when_memory_runs_out():
+    """The consequence has to travel with the number, not live in a wiki."""
+    from svrspec.memory import OS_PROFILES
+
+    for profile in OS_PROFILES.values():
+        consequence = profile.overrun_consequence
+        assert consequence.strip()
+        if profile.hard_limit:
+            assert "OOM" in consequence and "죽는다" in consequence
+        else:
+            assert "스왑" in consequence
+
+
+def test_a_measured_residency_can_replace_the_estimate(model_8b, q4):
+    """The shipped OS figures are experience, not measurement — so allow the real one.
+
+    Nothing in this project has watched a Windows Server idle. That is fine as
+    a default and bad as a final answer, so a number read off the box that will
+    run the model has to be able to win.
+    """
+    from svrspec.memory import measured_os_profile, size_memory
+    from svrspec.types import TokenProfile
+
+    tokens = TokenProfile()
+    measured = measured_os_profile(
+        1.8, "prod-llm-01, free -g idle 2026-07-31", base="linux-headless"
+    )
+    assert measured.runtime_gb == 1.8
+    assert "실측" in measured.note and "prod-llm-01" in measured.note
+
+    estimated = size_memory(model_8b, q4, tokens, slots=4, os_name="linux-headless")
+    real = size_memory(model_8b, q4, tokens, slots=4, os_name=measured)
+
+    assert real.runtime_os_gb == 1.8
+    assert real.subtotal_gb > estimated.subtotal_gb
+    # Only the OS term moved; the model's own demand is untouched.
+    assert real.weights_gb == pytest.approx(estimated.weights_gb)
+    assert real.kv_cache_gb == pytest.approx(estimated.kv_cache_gb)
+
+
+def test_a_measured_profile_inherits_policy_it_cannot_measure(model_8b, q4):
+    """A memory reading cannot tell you whether overrun kills the process."""
+    from svrspec.memory import measured_os_profile
+
+    in_container = measured_os_profile(0.4, "k8s node-7", base="linux-container")
+    on_host = measured_os_profile(0.4, "bare-metal-3", base="linux-headless")
+
+    assert in_container.hard_limit is True
+    assert on_host.hard_limit is False
+    assert in_container.headroom == pytest.approx(1.6)
+
+    # Headroom is a policy choice and can still be overridden explicitly.
+    assert measured_os_profile(0.4, "x", base="linux-container",
+                               headroom=2.0).headroom == 2.0
+
+
+def test_a_measurement_without_a_source_is_refused():
+    """Same rule as a promoted coefficient: no identity, no promotion."""
+    from svrspec.memory import measured_os_profile
+
+    with pytest.raises(ValueError, match="source"):
+        measured_os_profile(1.0, "   ")
+    with pytest.raises(ValueError, match="음수"):
+        measured_os_profile(-0.1, "somewhere")

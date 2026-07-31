@@ -64,6 +64,22 @@ class OsProfile:
     runtime_gb: float
     headroom: float
     note: str
+    #: True when going over the limit kills the process instead of slowing it.
+    #: A cgroup limit is not a soft ceiling: exceed it and the kernel OOM-kills
+    #: the container, where the same overshoot on a normal host would page to
+    #: disk and merely get slow. The headroom factor cannot express that
+    #: difference -- it is one number, and the two failure modes are not one
+    #: kind of bad -- so the flag rides alongside it and the sizing says so.
+    hard_limit: bool = False
+
+    @property
+    def overrun_consequence(self) -> str:
+        """What happens if the working set exceeds what was provisioned."""
+        return (
+            "메모리를 넘기면 OOM kill로 프로세스가 죽는다 — 느려지는 것이 아니다"
+            if self.hard_limit
+            else "메모리를 넘기면 스왑으로 넘어가 느려진다 — 죽지는 않는다"
+        )
 
 
 #: Ordered cheapest-first, which is also the order an operator should prefer:
@@ -80,11 +96,16 @@ OS_PROFILES: dict[str, OsProfile] = {
         id="linux-container",
         label="Linux 컨테이너",
         runtime_gb=0.6,
-        headroom=1.35,
+        # Deliberately the *largest* headroom, not the smallest. The container
+        # frees the most memory and then punishes overrun the hardest: a host
+        # that overshoots swaps, a cgroup that overshoots is killed. Sizing it
+        # tightest because its baseline is lightest gets the trade backwards.
+        headroom=1.6,
         note=(
             "컨테이너는 호스트 커널을 공유하므로 이미지 안의 상주분만 센다. "
-            "다만 cgroup 메모리 상한을 넘으면 스왑이 아니라 OOM kill이라 여유가 더 중요하다"
+            "상주량은 가장 적지만 실패 방식이 가장 나쁘다 — 아래 hard_limit 참조"
         ),
+        hard_limit=True,
     ),
     "windows-server": OsProfile(
         id="windows-server",
@@ -115,6 +136,50 @@ DEFAULT_OS_PROFILE = "windows-server"
 def os_profile(name: str | None) -> OsProfile:
     """Look up a profile by id, falling back to the default."""
     return OS_PROFILES.get(name or DEFAULT_OS_PROFILE, OS_PROFILES[DEFAULT_OS_PROFILE])
+
+
+def measured_os_profile(
+    runtime_gb: float,
+    source: str,
+    *,
+    base: str | None = None,
+    label: str | None = None,
+    headroom: float | None = None,
+) -> OsProfile:
+    """A profile whose resident figure came from a real machine.
+
+    The shipped numbers are operator experience, not measurements -- nothing in
+    this project has watched a Windows Server idle. That is fine as a default
+    and bad as a final answer, so this is the way out: read the number off the
+    box that will actually run the model and pass it in.
+
+        free -g            # Linux, "used" with nothing else running
+        Get-Counter '\\Memory\\Committed Bytes'   # Windows
+
+    `source` is required and is not decoration. A sizing report that quotes a
+    measured figure has to say which machine it was measured on, exactly as
+    `measured.py` requires a log identity before promoting a coefficient.
+
+    Only the resident cost is measurable this way; `headroom` stays a policy
+    choice and is inherited from `base` unless given, and so does `hard_limit`,
+    because whether overrun kills you is a property of the runtime and not
+    something a memory reading can tell you.
+    """
+    if runtime_gb < 0:
+        raise ValueError(f"runtime_gb는 음수일 수 없다: {runtime_gb}")
+    if not source.strip():
+        raise ValueError(
+            "source가 비어 있다 — 어느 기계에서 잰 값인지 없으면 실측이라고 할 수 없다"
+        )
+    parent = os_profile(base)
+    return OsProfile(
+        id=f"{parent.id}-measured",
+        label=label or f"{parent.label} (실측)",
+        runtime_gb=float(runtime_gb),
+        headroom=parent.headroom if headroom is None else float(headroom),
+        note=f"상주량 {runtime_gb:.2f}GB는 실측값이다 — 출처: {source.strip()}",
+        hard_limit=parent.hard_limit,
+    )
 
 def weight_bytes(model: ModelSpec, quant: QuantSpec, measured_bpw: float | None = None) -> float:
     """File-resident weight bytes. All of it is read per generated token."""
@@ -175,7 +240,7 @@ def size_memory(
     headroom: float | None = None,
     measured_bpw: float | None = None,
     flash_attention: bool = True,
-    os_name: str | None = None,
+    os_name: str | OsProfile | None = None,
 ) -> MemoryBreakdown:
     """Full RAM requirement for one (model, quant, concurrency) deployment.
 
@@ -183,10 +248,15 @@ def size_memory(
     cost of the operating system and the slack its allocator wants. An explicit
     `headroom` still wins, so callers that had tuned it keep their value.
     """
-    profile = os_profile(os_name)
+    # An OsProfile may be passed directly, which is how a measured figure gets
+    # in: `measured_os_profile()` builds one from a reading off the real box.
+    if isinstance(os_name, OsProfile):
+        profile, chosen = os_name, True
+    else:
+        profile, chosen = os_profile(os_name), os_name is not None
     if headroom is None:
-        headroom = profile.headroom if os_name else DEFAULT_HEADROOM
-    runtime_gb = profile.runtime_gb if os_name else RUNTIME_OS_GB
+        headroom = profile.headroom if chosen else DEFAULT_HEADROOM
+    runtime_gb = profile.runtime_gb if chosen else RUNTIME_OS_GB
 
     ctx = ctx_tokens if ctx_tokens else _rounded_ctx(tokens.peak_ctx_tokens)
 
