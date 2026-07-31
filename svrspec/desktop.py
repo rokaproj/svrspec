@@ -32,11 +32,12 @@ from .sizing import sweep_cpus, tiers
 
 WINDOW_TITLE = "svrspec — GPU 서빙 서버 스펙 산정"
 #: How long to let the window prove its bridge works before rescuing it.
-#: Longer than the page's own 15s timeout would leave the operator staring at
-#: an error while Python is still waiting; shorter risks rescuing a window that
-#: was merely slow to start on a cold disk. The rescue is cheap and invisible
-#: when it is unnecessary, so err on the side of firing.
-BRIDGE_GRACE_S = 18.0
+#: A working bridge answers in milliseconds, so this is not a performance
+#: budget -- it is how long a broken window is allowed to look broken. Just
+#: past the page's own 5s timeout, so the operator sees the page's message and
+#: then the rescue, rather than an error with nothing behind it. The rescue is
+#: cheap and invisible when unnecessary, so err on the side of firing.
+BRIDGE_GRACE_S = 6.0
 #: Kept above the stylesheet's single-column breakpoint (900px) so the input
 #: rail and the results always sit side by side in the app window.
 MIN_SIZE = (1100, 760)
@@ -258,9 +259,9 @@ def run(catalog: Catalog | None = None, debug: bool = False) -> int:
         import webview
     except ImportError:
         raise SystemExit(
-            "데스크톱 창을 띄우려면 pywebview가 필요하다.\n"
+            "데스크톱 창을 띄우려면 pywebview가 필요합니다.\n"
             "  pip install pywebview\n"
-            "서버 방식으로 쓰려면: svrspec gui"
+            "서버 방식으로 쓰시려면: svrspec gui"
         )
 
     api = Api(catalog)

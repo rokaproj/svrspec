@@ -7,7 +7,7 @@
 ;   ISCC.exe installer\svrspec.iss
 
 #define AppName "svrspec"
-#define AppVersion "0.2.6"
+#define AppVersion "0.2.7"
 #define AppExe "svrspec.exe"
 #define BuildDir "..\build\exe.win-amd64-3.12"
 

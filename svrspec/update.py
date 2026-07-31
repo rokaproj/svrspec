@@ -162,7 +162,7 @@ def download(
     name = asset_name or release.installer_name
     if not name:
         raise UpdateError(
-            f"릴리스에 Windows 설치 파일이 없다 — {release.page_url} 를 확인하라."
+            f"릴리스에 Windows 설치 파일이 없다 — {release.page_url} 를 확인해 주세요."
         )
 
     expected = _expected_sha256(release, name, timeout=min(timeout, 30.0))

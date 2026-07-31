@@ -351,7 +351,7 @@ def render_html(
         unverified_html = (
             f"<div class='caveat'><strong>미확인 스펙 {len(unverified)}건.</strong> "
             f"아래 항목은 벤더 데이터시트로 확인되지 않은 값을 포함한다. 납품 문서로 "
-            f"확정하기 전에 반드시 대조해야 한다.<br><span class='note'>{items}</span></div>"
+            f"확정하기 전에 반드시 대조하셔야 합니다.<br><span class='note'>{items}</span></div>"
         )
 
     calib_html = _coefficient_html(eff, candidates)

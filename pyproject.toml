@@ -1,6 +1,6 @@
 [project]
 name = "svrspec"
-version = "0.2.6"
+version = "0.2.7"
 description = "GPU 서빙 서버 스펙 산정 시뮬레이터 — 모델을 넣으면 서버 스펙을 추천한다"
 readme = "README.md"
 requires-python = ">=3.11"

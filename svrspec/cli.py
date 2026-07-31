@@ -454,7 +454,7 @@ def _cmd_recommend(args) -> int:
     if args.only_pass:
         candidates = [c for c in candidates if c.verdict != "fail"]
     if not candidates:
-        print("조건을 만족하는 CPU 후보가 없다. --sockets 를 늘리거나 더 작은 모델을 시도하라.")
+        print("조건을 만족하는 CPU 후보가 없다. --sockets 를 늘리거나 더 작은 모델을 시도해 보세요.")
         return 1
 
     tier_map = tiers(candidates)
@@ -699,7 +699,7 @@ def _cmd_timeline(args) -> int:
         print(f"  {name}{pad}  {_sparkline(values)}  {note}")
     axis_pad = " " * (width + 2)
     print(f"  {axis_pad}0h{' ' * max(len(b) - 5, 0)}24h")
-    print("  각 행은 자기 계열의 최대값에 맞춰 그린다 — 절대값은 오른쪽 주석을 봐라.")
+    print("  각 행은 자기 계열의 최대값에 맞춰 그린다 — 절대값은 오른쪽 주석을 참고하세요.")
     print()
 
     label = {"bandwidth": "메모리 대역폭", "compute": "연산", "none": "없음"}
@@ -931,7 +931,7 @@ def _cmd_mock(args) -> int:
             args.out.write_text(to_csv(days[0]), encoding="utf-8-sig")
             print(f"\n저장: {args.out} (1일치 {len(days[0].alarms):,}건, CSV)")
             print("  ! CSV에는 위 가정 기록(notes)이 담기지 않고 다시 읽을 수도 없다. "
-                  "파이프라인에 넣거나 보관하려면 .jsonl 로 저장해라.")
+                  "파이프라인에 넣거나 보관하려면 .jsonl 로 저장하세요.")
             if len(days) > 1:
                 print(f"  ! CSV는 첫날만 저장했다 ({len(days)}일치를 요청했다).")
         else:
@@ -1289,7 +1289,7 @@ def _cmd_calibrate(args) -> int:
 
     if not points:
         print("측정값을 하나도 읽지 못했다. llama-bench 표/JSON 또는 llama-server 로그인지 "
-              "확인해라.", file=sys.stderr)
+              "확인해 주세요.", file=sys.stderr)
         return 1
 
     print(f"모델    {model.name}  {model.params_b:.2f}B  {quant.id}")
@@ -1378,7 +1378,7 @@ def _cmd_calibrate(args) -> int:
         _write_coefficients(args.out, derived)
         print(f"\n계수 저장: {args.out}")
         print("  카탈로그에 반영하려면 이 파일의 항목을 "
-              "svrspec/catalog/coefficients.json 에 병합해라 — "
+              "svrspec/catalog/coefficients.json 에 병합하세요 — "
               "덮어쓰기는 되돌리기 어려우므로 자동으로 하지 않는다.")
     return 0
 
@@ -1470,10 +1470,10 @@ def _cmd_verify(args) -> int:
             cb = compute_buffer_bytes(spec, 1) / 1024**2
             print(f"  {path.name}  ctx {ctx}: KV {kv:.0f} MiB, compute {cb:.0f} MiB")
     print("\n  이 두 값은 llama-server 기동 로그의 'KV self size' / 'compute buffer size'와")
-    print("  직접 대조할 수 있다. 5% 넘게 벌어지면 memory.py 의 ACTIVATION_TENSORS 를 조정하라.")
+    print("  직접 대조할 수 있다. 5% 넘게 벌어지면 memory.py 의 ACTIVATION_TENSORS 를 조정하세요.")
 
     if failures:
-        print(f"\n{failures}개 파일에서 5% 초과 오차. quants.json 의 bits_per_weight 를 보정하라.")
+        print(f"\n{failures}개 파일에서 5% 초과 오차. quants.json 의 bits_per_weight 를 보정하세요.")
         return 1
     print("\n전부 5% 이내.")
     return 0

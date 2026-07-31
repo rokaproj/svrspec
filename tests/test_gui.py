@@ -850,7 +850,7 @@ def test_the_page_asks_for_capacity_only_from_the_button():
 def test_the_desktop_page_degrades_when_the_bridge_has_no_capacity_call():
     """The packaged app's bridge is a fixed surface; an older one must not throw."""
     assert "window.pywebview.api.capacity" in DESKTOP_HTML
-    assert "데스크톱 빌드에는 과부하 분석이 연결되어 있지 않다" in DESKTOP_HTML
+    assert "데스크톱 빌드에는 과부하 분석이 연결되어 있지 않습니다" in DESKTOP_HTML
 
 
 def test_the_task_manager_offers_a_tile_per_resource():
@@ -1728,7 +1728,7 @@ def test_the_lab_keeps_two_builds_side_by_side():
 def test_the_desktop_page_degrades_when_the_bridge_has_no_lab_call():
     assert "window.pywebview.api.lab" in DESKTOP_HTML
     assert "window.pywebview.api.bench" in DESKTOP_HTML
-    assert "데스크톱 빌드에는 가상 랩이 연결되어 있지 않다" in DESKTOP_HTML
+    assert "데스크톱 빌드에는 가상 랩이 연결되어 있지 않습니다" in DESKTOP_HTML
 
 
 def test_every_lab_control_carries_a_visible_label():
@@ -1893,7 +1893,7 @@ def test_the_page_measures_a_model_only_from_the_button():
 def test_the_desktop_page_degrades_when_the_bridge_has_no_modelbench_call():
     """The packaged bridge is a fixed surface; an older installer must not throw."""
     assert "window.pywebview.api.modelbench" in DESKTOP_HTML
-    assert "데스크톱 빌드에는 모델 성능 측정이 연결되어 있지 않다" in DESKTOP_HTML
+    assert "데스크톱 빌드에는 모델 성능 측정이 연결되어 있지 않습니다" in DESKTOP_HTML
 
 
 def test_every_model_screen_control_carries_a_visible_label():
@@ -2475,3 +2475,61 @@ def test_the_model_dropdown_groups_are_named_not_keyed():
     assert "SIZE_CLASS_LABEL" in SERVER_HTML
     assert "2B 미만" in SERVER_HTML
     assert "70B 이상" in SERVER_HTML
+
+
+def test_the_rail_is_legible_before_anything_loads():
+    """An empty form reads as a broken window, not a slow one.
+
+    Every number in the rail used to be written by script after the catalogue
+    arrived. With a dead desktop bridge that is a full timeout of a form with
+    nothing in it -- which is what the screenshot of "UI 깨짐" actually showed.
+    Markup defaults cost nothing and are there before the first byte of JSON.
+    """
+    import re
+
+    for key, want in DEFAULTS.items():
+        m = re.search(rf'<input type="number" id="{key}"[^>]*>', SERVER_HTML)
+        if m is None:          # not every default is a rail input
+            continue
+        assert f'value="{want}"' in m.group(0), f"{key}: 마크업 기본값 없음 또는 불일치"
+
+    # And the script must not carry a second copy that can drift from it.
+    assert "storm_window_s:30" not in SERVER_HTML.replace(" ", "")
+
+
+def test_the_two_column_rows_cannot_be_knocked_out_of_line():
+    """Per-child margins tilted every paired row by 8px.
+
+    Only one field in a `.row` matched `.field:first-of-type`, so it sat higher
+    than its neighbour. Spacing belongs to the container.
+    """
+    assert ".field:first-of-type" not in SERVER_HTML
+    assert ".field{display:flex; flex-direction:column; gap:var(--s1); margin:0" in SERVER_HTML
+    # One control height, not two: number inputs and selects sat 4px apart.
+    assert "select{min-height:40px}" not in SERVER_HTML
+
+
+def test_the_interface_speaks_politely():
+    """It is a tool people are asked to trust, not a machine issuing orders."""
+    import re
+
+    for mode in ("server", "desktop"):
+        page = app_html(mode)
+        # Strip script comments, which are English but can quote old wording.
+        # The ending must end a word: "부하라면" contains 하라 and is innocent.
+        rude = re.findall(r"[가-힣][^\"'\n<>]{0,40}?(?:해라|하라|기다려라|열어라|봐라)(?![가-힣])", page)
+        assert not rude, f"{mode}: 명령형 반말 {rude[:5]}"
+
+
+def test_the_bridge_wait_is_short_enough_to_sit_through():
+    """A working bridge answers in milliseconds; a long ceiling only delays the
+    admission of failure, and that wait is the whole of the reported hang."""
+    import re
+
+    from svrspec import desktop as dt
+
+    ms = int(re.search(r"var BRIDGE_TIMEOUT_MS = (\d+)", SERVER_HTML).group(1))
+    assert ms <= 6000, f"브리지 대기 {ms}ms 는 너무 길다"
+    # Python must give up just after the page does, so the rescue follows the
+    # message instead of leaving an error with nothing behind it.
+    assert ms / 1000 < dt.BRIDGE_GRACE_S <= ms / 1000 + 3

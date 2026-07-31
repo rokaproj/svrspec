@@ -1263,7 +1263,7 @@ MB_BOUND_LABEL = {
 MB_BOUND_ADVICE = {
     "bandwidth": "메모리 채널 수와 DDR 등급이 돈이 되는 곳이다. 코어를 더 사도 이 벽은 그대로다.",
     "core-bandwidth": "코어 하나가 끌어올 수 있는 대역폭에 걸렸다. 채널을 더 채우기보다 "
-                      "코어를 늘리거나 슬롯을 늘려 여러 코어가 함께 읽게 해야 한다.",
+                      "코어를 늘리거나 슬롯을 늘려 여러 코어가 함께 읽게 해야 합니다.",
     "compute": "코어 수와 벡터 ISA(AMX/AVX-512)가 돈이 되는 곳이다. 메모리를 더 빠르게 해도 "
                "이 벽은 그대로다.",
     "none": "이 위상에서는 어느 천장에도 붙지 않았다.",
@@ -1827,24 +1827,43 @@ main{
 fieldset{
   border:1px solid var(--border); border-radius:var(--radius);
   background:var(--bg-secondary); padding:var(--s3) var(--s4) var(--s4); margin:0;
+  /* Spacing between controls belongs to the container, not to each control's
+     own margin. Per-child margins are what tilted the two-column rows: only
+     one of the two fields matched :first-of-type, so it sat higher than its
+     neighbour and every paired row in the rail came out crooked. */
+  display:flex; flex-direction:column; gap:var(--s3);
 }
 legend{
   font-size:var(--fs-xs); font-weight:600; letter-spacing:0.06em;
   text-transform:uppercase; color:var(--text-tertiary); padding:0 var(--s1);
 }
-.field{display:flex; flex-direction:column; gap:var(--s1); margin-top:var(--s3)}
-.field:first-of-type{margin-top:var(--s1)}
-.field label{font-size:var(--fs-sm); color:var(--text-secondary)}
-.row{display:grid; grid-template-columns:1fr 1fr; gap:var(--s3)}
+.field{display:flex; flex-direction:column; gap:var(--s1); margin:0; min-width:0}
+.field label{
+  font-size:var(--fs-sm); color:var(--text-secondary); line-height:1.35;
+  /* One line of label reserves the height of one line, so a row whose two
+     captions differ in length still lines its two inputs up. */
+  min-height:1.35em;
+}
+.row{display:grid; grid-template-columns:1fr 1fr; gap:var(--s3); align-items:start}
+/* When a caption is long enough to wrap, min-height alone cannot keep the pair
+   aligned -- the label track has to be shared. Subgrid does that exactly; where
+   it is missing the rule above still holds the common case. */
+@supports (grid-template-rows: subgrid){
+  .row{grid-template-rows:auto auto}
+  .row > .field{display:grid; grid-template-rows:subgrid; grid-row:span 2; gap:var(--s1)}
+}
 input[type=number],select{
-  width:100%; min-height:36px; padding:var(--s1) var(--s2);
+  width:100%; min-width:0; box-sizing:border-box;
+  min-height:38px; padding:var(--s1) var(--s2);
   font:400 var(--fs-sm) var(--font); color:var(--text-primary);
   background:var(--bg-tertiary); border:1px solid var(--border);
   border-radius:var(--radius-sm);
 }
-select{min-height:40px}
 input[type=number]:hover,select:hover{border-color:var(--text-tertiary)}
-.check{display:flex; align-items:center; gap:var(--s2); margin-top:var(--s3);
+/* No margin-top: the fieldset's own gap already spaces this from the control
+   above it, and adding both is what made the checkbox drift away from its
+   group. */
+.check{display:flex; align-items:center; gap:var(--s2);
   font-size:var(--fs-sm); color:var(--text-secondary); min-height:24px}
 .check input{width:16px; height:16px; accent-color:var(--accent)}
 .hint{font-size:var(--fs-xs); color:var(--text-tertiary)}
@@ -2320,36 +2339,36 @@ def app_html(mode: str = "server") -> str:
       <legend>알람 부하</legend>
       <div class="field">
         <label for="alarms_per_day">개수</label>
-        <input type="number" id="alarms_per_day" min="1" max="100000" step="10">
+        <input type="number" id="alarms_per_day" min="1" max="100000" step="10" value="150">
       </div>
       <div class="row">
         <div class="field">
           <label for="storm_size">스톰 크기</label>
-          <input type="number" id="storm_size" min="0" max="5000">
+          <input type="number" id="storm_size" min="0" max="5000" value="40">
         </div>
         <div class="field">
           <label for="storm_window_s">스톰 창(초)</label>
-          <input type="number" id="storm_window_s" min="1" max="3600">
+          <input type="number" id="storm_window_s" min="1" max="3600" value="30">
         </div>
       </div>
       <div class="row">
         <div class="field">
           <label for="storms_per_day">스톰 횟수/일</label>
-          <input type="number" id="storms_per_day" min="0" max="100">
+          <input type="number" id="storms_per_day" min="0" max="100" value="2">
         </div>
         <div class="field">
           <label for="slots">동시 슬롯</label>
-          <input type="number" id="slots" min="1" max="64">
+          <input type="number" id="slots" min="1" max="64" value="2">
         </div>
       </div>
       <div class="row">
         <div class="field">
           <label for="sla_seconds">지연 SLA(초)</label>
-          <input type="number" id="sla_seconds" min="1" max="3600">
+          <input type="number" id="sla_seconds" min="1" max="3600" value="30">
         </div>
         <div class="field">
           <label for="storm_drain_min">스톰 소진(분)</label>
-          <input type="number" id="storm_drain_min" min="1" max="1440">
+          <input type="number" id="storm_drain_min" min="1" max="1440" value="5">
         </div>
       </div>
       <span class="hint">평상시 알람은 지연 SLA로, 스톰은 소진 시간으로 판정한다.</span>
@@ -2360,21 +2379,21 @@ def app_html(mode: str = "server") -> str:
       <div class="row">
         <div class="field">
           <label for="system_tokens">시스템</label>
-          <input type="number" id="system_tokens" min="0" max="32000" step="50">
+          <input type="number" id="system_tokens" min="0" max="32000" step="50" value="300">
         </div>
         <div class="field">
           <label for="fewshot_tokens">few-shot</label>
-          <input type="number" id="fewshot_tokens" min="0" max="32000" step="50">
+          <input type="number" id="fewshot_tokens" min="0" max="32000" step="50" value="400">
         </div>
       </div>
       <div class="row">
         <div class="field">
           <label for="alarm_tokens">알람 원문</label>
-          <input type="number" id="alarm_tokens" min="1" max="32000" step="50">
+          <input type="number" id="alarm_tokens" min="1" max="32000" step="50" value="250">
         </div>
         <div class="field">
           <label for="output_tokens">출력</label>
-          <input type="number" id="output_tokens" min="1" max="32000" step="50">
+          <input type="number" id="output_tokens" min="1" max="32000" step="50" value="250">
         </div>
       </div>
       <div class="check">
@@ -2598,7 +2617,12 @@ def app_html(mode: str = "server") -> str:
   // on "카탈로그를 불러오는 중…" with nothing to click and no error, because a
   // promise that never settles cannot reach a .catch(). So poll for the object
   // as well, and fail loudly rather than hang.
-  var BRIDGE_TIMEOUT_MS = 15000, BRIDGE_POLL_MS = 50;
+  // Five seconds, not fifteen. This is a local in-process call: when the
+  // bridge works it answers in milliseconds, so a long ceiling never buys a
+  // slow success -- it only makes a failure take longer to admit. Python
+  // rescues the window a moment later, and the wait is the whole of what the
+  // operator experiences as "로딩이 멈춘다".
+  var BRIDGE_TIMEOUT_MS = 5000, BRIDGE_POLL_MS = 50;
 
   function bridgeUp(){
     return !!(window.pywebview && window.pywebview.api && window.pywebview.api.catalog);
@@ -2629,8 +2653,8 @@ def app_html(mode: str = "server") -> str:
         // happening rather than handing the operator a command to type.
         else reject(new Error(
           "데스크톱 브리지가 " + (BRIDGE_TIMEOUT_MS / 1000) + "초 안에 준비되지 않았다. " +
-          "서버 방식으로 자동 전환하는 중이다 — 잠시 기다려라. " +
-          "화면이 그대로면 창을 닫고 다시 열어라."));
+          "서버 방식으로 자동 전환하는 중입니다 — 잠시만 기다려 주세요. " +
+          "화면이 그대로면 창을 닫았다가 다시 열어 주세요."));
       }
       function onReady(){ settle(true); }
       window.addEventListener("pywebviewready", onReady, {once:true});
@@ -2671,7 +2695,7 @@ def app_html(mode: str = "server") -> str:
       // predates the capacity engine, say so plainly rather than throwing.
       if(!(window.pywebview.api && window.pywebview.api.capacity))
         return Promise.resolve({error:
-          "이 데스크톱 빌드에는 과부하 분석이 연결되어 있지 않다. 서버 모드(svrspec gui)에서 실행해라."});
+          "이 데스크톱 빌드에는 과부하 분석이 연결되어 있지 않습니다. 서버 모드(svrspec gui)에서 실행해 주세요."});
       return window.pywebview.api.capacity(p);
     }
     return fetch("/api/capacity", {method:"POST",
@@ -3572,7 +3596,7 @@ def app_html(mode: str = "server") -> str:
         broken.map(function(x){ return x.label; }).join(" · ") +
         " 축은 지금 설정에서 이미 미달이라 무릎이 없다."));
       head.appendChild(el("span", "why",
-        "더 빠른 CPU나 더 작은 모델·짧은 프롬프트로 통과 구간에 들어간 다음 다시 분석해라."));
+        "더 빠른 CPU나 더 작은 모델·짧은 프롬프트로 통과 구간에 들어간 다음 다시 분석해 주세요."));
     }
     box.appendChild(head);
 
@@ -3672,7 +3696,7 @@ def app_html(mode: str = "server") -> str:
       card.appendChild(capacityBody(capacity.data));
     } else if(capacity.data && !capacity.busy){
       card.appendChild(el("p", "hint-row",
-        "입력이 바뀌었다. 이전 분석 결과는 지금 조건과 맞지 않으므로 다시 실행해야 한다."));
+        "입력이 바뀌었습니다. 이전 분석 결과는 지금 조건과 맞지 않으니 다시 실행해 주세요."));
     }
     capHost.appendChild(card);
   }
@@ -3930,7 +3954,7 @@ def app_html(mode: str = "server") -> str:
     return p;
   }
   var NO_LAB_BRIDGE =
-    "이 데스크톱 빌드에는 가상 랩이 연결되어 있지 않다. 서버 모드(svrspec gui)에서 실행해라.";
+    "이 데스크톱 빌드에는 가상 랩이 연결되어 있지 않습니다. 서버 모드(svrspec gui)에서 실행해 주세요.";
   function askLab(p){
     if(DESKTOP){
       if(!(window.pywebview.api && window.pywebview.api.lab))
@@ -4550,7 +4574,7 @@ def app_html(mode: str = "server") -> str:
     }
     if(lab.benchStale){
       card.appendChild(el("div", "note",
-        "입력이 바뀌었다. 아래 결과는 지금 조립과 맞지 않으므로 다시 실행해야 한다."));
+        "입력이 바뀌었습니다. 아래 결과는 지금 조립과 맞지 않으니 다시 실행해 주세요."));
     }
     var primary = runs[0].d;
     card.appendChild(el("p", "cpu", primary.profile.label));
@@ -4747,7 +4771,7 @@ def app_html(mode: str = "server") -> str:
   var mbState = {key: null, data: null, error: null, busy: false,
                  metric: "decode_tps_single"};
   var NO_MB_BRIDGE =
-    "이 데스크톱 빌드에는 모델 성능 측정이 연결되어 있지 않다. 서버 모드(svrspec gui)에서 실행해라.";
+    "이 데스크톱 빌드에는 모델 성능 측정이 연결되어 있지 않습니다. 서버 모드(svrspec gui)에서 실행해 주세요.";
 
   function askModelBench(p){
     if(DESKTOP){
@@ -5151,7 +5175,7 @@ def app_html(mode: str = "server") -> str:
             "그쪽을 늘리는 것이 양쪽 모두에 듣는다는 뜻이다."
           : "프롬프트 처리는 " + pf.bound_label + "에, 토큰 생성은 " + de.bound_label +
             "에 걸린다 — 기계의 반대쪽이다. 프롬프트가 긴 부하라면 코어와 벡터 ISA를, " +
-            "생성이 긴 부하라면 메모리 채널과 DDR 등급을 사야 한다."));
+            "생성이 긴 부하라면 메모리 채널과 DDR 등급을 확보하셔야 합니다."));
     }
     return wrap;
   }
@@ -5190,7 +5214,7 @@ def app_html(mode: str = "server") -> str:
     wrap.appendChild(el("p", "hint-row",
       "학습 축의 계수는 카탈로그에 근거가 없다 — 공개 자료로 환산한 추정이고, 위 판정은 그 " +
       "가정 위에 서 있다. 샘플 " + num(d.train_samples).toLocaleString() +
-      "건 기준이며, 안 된다는 판정도 결과다: 근거를 읽고 GPU 쪽과 비교해라."));
+      "건 기준이며, 안 된다는 판정도 결과다: 근거를 읽고 GPU 쪽과 비교해 보세요."));
     return wrap;
   }
 
@@ -5252,7 +5276,7 @@ def app_html(mode: str = "server") -> str:
         "입력을 바꿔도 자동으로 다시 돌지 않는다."));
     } else if(!fresh){
       card.appendChild(el("div", "note",
-        "입력이 바뀌었다. 아래 결과는 지금 조건과 맞지 않으므로 다시 측정해야 한다."));
+        "입력이 바뀌었습니다. 아래 결과는 지금 조건과 맞지 않으니 다시 측정해 주세요."));
     }
     host.appendChild(card);
 
@@ -5471,10 +5495,11 @@ def app_html(mode: str = "server") -> str:
     });
     qs.value = "Q4_K_M";
 
-    var d = {alarms_per_day:150, storm_size:40, storm_window_s:30, storms_per_day:2,
-             slots:2, sla_seconds:30, storm_drain_min:5, system_tokens:300,
-             fewshot_tokens:400, alarm_tokens:250, output_tokens:250, sockets:1, dpc:1};
-    NUM.forEach(function(k){ document.getElementById(k).value = d[k]; });
+    // The rail's starting values live in the markup, not here. Setting them
+    // from script meant every field sat empty until the catalogue arrived --
+    // and when the desktop bridge is dead that is fifteen seconds of a form
+    // with nothing in it, which reads as a broken window rather than a slow
+    // one. Nothing here needs to run for the rail to be legible.
 
     document.getElementById("rail").addEventListener("input", function(){
       modelHint(); tokenHint(); run();

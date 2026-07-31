@@ -593,7 +593,7 @@ def _grade(
         if cores > 0 and point.n_threads < cores * THREAD_MISMATCH_RATIO:
             reasons.append(
                 f"로그는 {point.n_threads}스레드인데 {cpu.model}은 {cores}코어다 — "
-                f"이 로그가 이 부품의 것인지 확인해라"
+                f"이 로그가 이 부품의 것인지 확인해 주세요"
             )
     if reasons and confidence == "measured":
         return "derived", " (실측유도로 낮췄다: " + "; ".join(reasons) + ")"
@@ -664,7 +664,7 @@ def derive_eta_bw(
     if ceiling <= 0:
         raise ValueError(
             f"채널 천장이 0이다 — {cpu.id}의 채널 수({cpu.mem_channels})나 "
-            f"{memory.id}의 실효 속도({memory.effective_mts})를 확인해라"
+            f"{memory.id}의 실효 속도({memory.effective_mts})를 확인해 주세요"
         )
 
     value = achieved / ceiling
@@ -737,7 +737,7 @@ def derive_eta_compute(
     peak, isa = peak_flops(cpu, sockets)
     if peak <= 0:
         raise ValueError(
-            f"{cpu.id}의 이론 연산 천장이 0이다 — 코어 수나 전코어 터보 클럭을 확인해라"
+            f"{cpu.id}의 이론 연산 천장이 0이다 — 코어 수나 전코어 터보 클럭을 확인해 주세요"
         )
 
     value = achieved / peak

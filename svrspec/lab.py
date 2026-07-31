@@ -283,7 +283,7 @@ def assemble(
             f"{vm.sockets}소켓을 요청했지만 {cpu.model}의 최대 소켓 수는 "
             f"{cpu.sockets_max}이다",
             f"{cpu.sockets_max}소켓 이하로 줄이거나 더 많은 소켓을 지원하는 "
-            f"부품을 골라라",
+            f"부품을 선택해 주세요",
         ))
 
     if dpc > MAX_DPC:
@@ -300,7 +300,7 @@ def assemble(
             "error", "ram-too-small",
             f"{model.id} / {quant.id}를 {slots}슬롯으로 돌리는 데 "
             f"{ram.subtotal_gb:.0f}GB가 필요한데 장착량은 {ram_total_gb}GB뿐이다",
-            f"여유분까지 고려하면 {ram.provision_gb}GB 이상을 장착해라 "
+            f"여유분까지 고려하면 {ram.provision_gb}GB 이상을 장착하셔야 합니다 "
             f"(권장 {ram.recommended_gb:.0f}GB)",
         ))
 
@@ -479,7 +479,7 @@ def _pick_memory(
             "error", "no-memory-option",
             f"카탈로그에 {cpu.model}이 채널당 {dpc}장으로 돌릴 수 있는 "
             f"{cpu.ddr_gen} 모듈이 없다",
-            "채널당 장수를 바꾸거나 memory.json에 해당 구성을 추가해라",
+            "채널당 장수를 바꾸거나 memory.json에 해당 구성을 추가해 주세요",
         ))
         if not eligible:
             raise CatalogError(
@@ -500,7 +500,7 @@ def _pick_memory(
         f"{dimm_gb}GB {cpu.ddr_gen} 모듈이 카탈로그에 없다 — 속도는 "
         f"{chosen.dimm_gb}GB 모듈({chosen.effective_mts} MT/s)과 같다고 가정했다",
         f"카탈로그에 있는 용량({', '.join(f'{c}GB' for c in sorted(_dimm_gb_of(eligible)))}) "
-        f"중에서 고르거나 memory.json에 이 모듈을 추가해라",
+        f"중에서 고르시거나 memory.json에 이 모듈을 추가해 주세요",
     ))
     return chosen
 

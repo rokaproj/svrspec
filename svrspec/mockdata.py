@@ -333,7 +333,7 @@ def observed_count(date: str) -> int:
     months = MONTHLY.get(day.year)
     if not months or day.month not in months:
         raise ValueError(
-            f"{date}는 실측 구간(2025-02 ~ 2026-06) 밖이다 — count를 직접 지정해라"
+            f"{date}는 실측 구간(2025-02 ~ 2026-06) 밖이다 — count를 직접 지정해 주세요"
         )
     days_in_month = calendar.monthrange(day.year, day.month)[1]
     return round(months[day.month] / days_in_month)
