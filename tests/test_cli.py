@@ -474,3 +474,110 @@ def test_serve_accepts_an_alarm_file(tmp_path, capsys):
     out = capsys.readouterr().out
     assert str(src) in out
     assert "26건" in out
+
+
+def test_lab_build_flags_an_under_populated_board(capsys):
+    """The expensive mistake has to be loud at the command line too."""
+    assert run([
+        "lab", "build", "--name", "thin", "--cpu", "test-amx-8ch", "--sockets", "1",
+        "--dimm", "64", "--count", "2", "--model", "test-8b-gqa", "--slots", "4",
+    ]) in (0, 1)
+    out = capsys.readouterr().out
+    assert "2/8" in out
+    assert "전 채널 장착" in out          # the comparison column
+    assert "→" in out                     # a remedy was offered
+
+
+def test_lab_build_is_quiet_when_the_board_is_full(capsys):
+    """A fully populated board of a catalogued DIMM size draws no complaint.
+
+    The fixture catalogue only carries 64 GB DDR5 modules, and asking for a
+    size it does not have is itself a finding -- correctly, since the speed of
+    an uncatalogued module is an assumption.
+    """
+    assert run([
+        "lab", "build", "--name", "full", "--cpu", "test-amx-8ch", "--sockets", "1",
+        "--dimm", "64", "--count", "8", "--model", "test-8b-gqa", "--slots", "4",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "8/8채널" in out
+    assert "지적 사항 없음" in out
+
+
+def test_lab_build_saves_and_show_reads_it_back(tmp_path, capsys):
+    path = tmp_path / "m.json"
+    assert run([
+        "lab", "build", "--name", "저장된머신", "--cpu", "test-amx-8ch",
+        "--dimm", "64", "--count", "8", "--model", "test-8b-gqa",
+        "--slots", "4", "--out", str(path),
+    ]) == 0
+    capsys.readouterr()
+
+    assert run(["lab", "show", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "저장된머신" in out
+    assert "8 × 64GB" in out
+
+
+def test_lab_show_reports_a_missing_file(tmp_path, capsys):
+    assert run(["lab", "show", str(tmp_path / "nope.json")]) == 1
+    assert "파일이 없다" in capsys.readouterr().err
+
+
+def test_bench_runs_a_replay_against_a_saved_machine(tmp_path, capsys):
+    path = tmp_path / "m.json"
+    run(["lab", "build", "--name", "m", "--cpu", "test-amx-8ch", "--dimm", "64",
+         "--count", "8", "--model", "test-3b", "--slots", "4", "--out", str(path)])
+    capsys.readouterr()
+
+    assert run([
+        "bench", "--machine", str(path), "--profile", "replay",
+        "--date", "2026-06-21", "--frames", "60",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "실행 결과" in out
+    assert "수신 / 전달" in out
+
+
+def test_bench_ramp_reports_where_it_broke(capsys):
+    assert run([
+        "bench", "--cpu", "test-desktop-2ch", "--model", "test-8b-gqa",
+        "--dimm", "32", "--dimm-count", "2", "--slots", "2",
+        "--profile", "ramp", "--from", "100", "--to", "3000",
+        "--alarm-tokens", "2000", "--frames", "120",
+    ]) == 0
+    out = capsys.readouterr().out
+    # Either it broke and said where, or it held and said that.
+    assert "무너진 지점" in out
+
+
+def test_bench_live_draws_the_run(capsys):
+    assert run([
+        "bench", "--cpu", "test-amx-8ch", "--model", "test-3b",
+        "--dimm", "64", "--dimm-count", "8", "--profile", "replay",
+        "--date", "2026-06-21", "--frames", "48", "--live",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "실행 재생" in out
+    for row in ("CPU 가동", "대역폭", "대기 큐", "p95 누적"):
+        assert row in out
+
+
+def test_bench_writes_a_frame_csv(tmp_path, capsys):
+    csv_path = tmp_path / "f.csv"
+    assert run([
+        "bench", "--cpu", "test-amx-8ch", "--model", "test-3b",
+        "--dimm", "64", "--dimm-count", "8", "--profile", "replay",
+        "--date", "2026-06-21", "--frames", "30", "--csv", str(csv_path),
+    ]) == 0
+    capsys.readouterr()
+
+    body = csv_path.read_text(encoding="utf-8-sig").strip().splitlines()
+    assert len(body) == 31          # header + 30 frames
+    for column in ("t_s", "queued", "active", "cpu_pct", "bw_pct", "p95_so_far_s"):
+        assert column in body[0]
+
+
+def test_bench_needs_a_machine_or_the_full_flag_set(capsys):
+    with pytest.raises(SystemExit):
+        run(["bench", "--cpu", "test-amx-8ch", "--profile", "replay"])

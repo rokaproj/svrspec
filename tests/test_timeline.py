@@ -35,16 +35,39 @@ def _run(catalog, model, cpu_id, workload, sockets=1):
     return build_timeline(trace, ceilings), trace, ceilings
 
 
-def test_hostsim_and_timeline_agree_on_the_same_run(catalog, model_8b):
-    """Two modules describing one run may not disagree about the physics.
+def test_every_view_shares_one_definition_of_the_physics():
+    """There must be exactly one place that turns work into bytes and flops.
 
-    `hostsim._rates` is a deliberate copy of `timeline._rates` -- private, and
-    returning fields the other has no use for. A copy with no test drifts, and
-    then the task-manager graph and the CSV export quote different bandwidths
-    for the same second. This is the test that makes the copy safe.
+    `hostsim` used to carry a hand-kept copy of this formula, and `bench` was
+    about to make a third. Copies drift, and then two screens quote different
+    bandwidths for the same second. `timeline.segment_rates` is now the single
+    definition; this test fails if a consumer grows its own again.
     """
-    from svrspec.hostsim import _rates as host_rates
-    from svrspec.timeline import _rates as timeline_rates
+    from pathlib import Path
+
+    import svrspec
+    from svrspec import hostsim, timeline
+
+    assert hostsim.segment_rates is timeline.segment_rates
+
+    # The formula's distinctive terms may appear only in timeline.py.
+    package = Path(svrspec.__file__).parent
+    fingerprints = ("sweeps_s", "decode_bytes_s", "prefill_bytes_s")
+    for path in sorted(package.rglob("*.py")):
+        if path.name == "timeline.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for term in fingerprints:
+            assert term not in source, (
+                f"{path.name} looks like a second copy of segment_rates "
+                f"(found {term!r}) -- import it instead"
+            )
+
+
+def test_hostsim_and_timeline_agree_on_the_same_run(catalog, model_8b):
+    """The shared definition must still produce the same numbers in both views."""
+    from svrspec.hostsim import segment_rates as host_rates
+    from svrspec.timeline import segment_rates as timeline_rates
 
     workload = Workload(alarms_per_day=350, tokens=TokenProfile(alarm_tokens=1500))
     timeline, trace, ceilings = _run(catalog, model_8b, "test-amx-8ch", workload)

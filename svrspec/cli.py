@@ -200,6 +200,54 @@ def _build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--csv", type=Path, default=None, help="건별 전달 기록 CSV")
     sv.set_defaults(handler=_cmd_serve)
 
+    # lab ------------------------------------------------------------------
+    lb = sub.add_parser("lab", help="가상 서버 조립 — CPU·소켓·DIMM을 직접 고른다")
+    lb_sub = lb.add_subparsers(dest="lab_command")
+
+    lbb = lb_sub.add_parser("build", help="머신을 조립해 검증하고 저장")
+    lbb.add_argument("--name", default="머신")
+    lbb.add_argument("--cpu", required=True)
+    lbb.add_argument("--sockets", type=int, default=1)
+    lbb.add_argument("--dimm", type=int, required=True, help="DIMM 한 장의 용량(GB)")
+    lbb.add_argument("--count", type=int, required=True, help="DIMM 총 장수")
+    lbb.add_argument("--model", required=True)
+    lbb.add_argument("--quant", default="Q4_K_M")
+    lbb.add_argument("--slots", type=int, default=4)
+    lbb.add_argument("--out", type=Path, default=None, help="머신 정의 저장 경로(.json)")
+    lbb.set_defaults(handler=_cmd_lab_build)
+
+    lbs = lb_sub.add_parser("show", help="저장된 머신의 구성과 검증 결과")
+    lbs.add_argument("machine", type=Path)
+    lbs.set_defaults(handler=_cmd_lab_show)
+
+    lb.set_defaults(handler=_cmd_lab_help)
+
+    # bench ----------------------------------------------------------------
+    bn = sub.add_parser("bench", help="조립한 머신에 부하를 걸어 실행")
+    bn.add_argument("--machine", type=Path, default=None, help="lab build 로 저장한 머신")
+    bn.add_argument("--cpu", default=None, help="--machine 대신 즉석 조립")
+    bn.add_argument("--model", default=None)
+    bn.add_argument("--sockets", type=int, default=1)
+    bn.add_argument("--dimm", type=int, default=None, help="DIMM 한 장의 용량(GB)")
+    bn.add_argument("--dimm-count", dest="count", type=int, default=None,
+                    help="DIMM 총 장수")
+    bn.add_argument("--profile", default="replay",
+                    choices=["replay", "ramp", "spike", "soak"])
+    bn.add_argument("--date", default="2026-06-01", help="replay: 재생할 날짜")
+    bn.add_argument("--from", dest="from_rate", type=int, default=100,
+                    help="ramp: 시작 부하(건/일)")
+    bn.add_argument("--to", dest="to_rate", type=int, default=2000,
+                    help="ramp: 끝 부하(건/일)")
+    bn.add_argument("--rate", type=int, default=300, help="soak/spike: 평시 부하")
+    bn.add_argument("--peak", type=int, default=800, help="spike: 급증 부하")
+    bn.add_argument("--hours", type=float, default=None, help="ramp/soak: 구간 길이")
+    _add_workload_args(bn)
+    bn.add_argument("--frames", type=int, default=600)
+    bn.add_argument("--queue-limit", type=int, default=None)
+    bn.add_argument("--live", action="store_true", help="프레임을 스파크라인으로 재생")
+    bn.add_argument("--csv", type=Path, default=None, help="프레임 시계열 CSV")
+    bn.set_defaults(handler=_cmd_bench)
+
     # calibrate ------------------------------------------------------------
     cb = sub.add_parser(
         "calibrate",
@@ -991,6 +1039,205 @@ def _write_deliveries_csv(path: Path, deliveries: list) -> None:
         writer.writerow(fields)
         for d in deliveries:
             writer.writerow([getattr(d, f) for f in fields])
+
+
+# --------------------------------------------------------------------------
+# lab / bench
+#
+# The lab is where a build stops being a row in a table and becomes a machine
+# somebody could order: a specific CPU, a specific number of DIMMs of a
+# specific size. That distinction matters because the most expensive mistake in
+# this domain is invisible in a capacity column -- two 64 GB DIMMs in an
+# eight-channel board have the right capacity and a quarter of the bandwidth.
+# --------------------------------------------------------------------------
+
+LEVEL_MARK = {"error": "✗", "warn": "!", "info": "·"}
+
+
+def _print_assembly(asm) -> None:
+    """The bill of materials, then everything wrong with it."""
+    vm = asm.vm
+    print(f"머신    {vm.name}")
+    print(f"CPU     {asm.cpu.vendor} {asm.cpu.model}  "
+          f"{asm.cpu.cores * vm.sockets}코어 {vm.sockets}소켓  "
+          f"({asm.channels_total}채널 {asm.memory.ddr_gen})")
+    print(f"DIMM    {vm.dimm_count} × {vm.dimm_gb}GB {asm.memory.ddr_gen}-"
+          f"{asm.memory.effective_mts}  =  {asm.ram_total_gb}GB  "
+          f"({asm.channels_populated}/{asm.channels_total}채널 장착, "
+          f"채널당 {asm.dimms_per_channel}장)")
+    print(f"모델    {asm.model.name}  {asm.quant.id}  {vm.slots}슬롯  "
+          f"(실사용 {asm.ram_used_gb:.1f}GB)")
+    print()
+
+    lost = asm.bandwidth_full_gbs - asm.bandwidth_gbs
+    print(report._table(["항목", "이 구성", "전 채널 장착", "차이"], [
+        ["실효 대역폭", f"{asm.bandwidth_gbs:.1f} GB/s",
+         f"{asm.bandwidth_full_gbs:.1f} GB/s",
+         f"-{lost / asm.bandwidth_full_gbs:.0%}" if lost > 0.05 else "—"],
+        ["decode (1슬롯)", f"{asm.decode_tps_single:.1f} tok/s",
+         f"{asm.decode_tps_full:.1f} tok/s",
+         f"-{1 - asm.decode_tps_single / asm.decode_tps_full:.0%}"
+         if asm.decode_tps_full and asm.decode_tps_single < asm.decode_tps_full * 0.99
+         else "—"],
+        ["prefill", f"{asm.prefill_tps:.0f} tok/s", "", ""],
+        ["불확실도", f"±{asm.uncertainty:.0%}", "", ""],
+    ], aligns="lrrr"))
+
+    if asm.findings:
+        print()
+        print("검증 결과")
+        for f in asm.findings:
+            print(f"  {LEVEL_MARK.get(f.level, '·')} {f.message}")
+            if f.remedy:
+                print(f"      → {f.remedy}")
+    else:
+        print("\n검증 결과  지적 사항 없음")
+
+
+def _machine_from_args(cat, args):
+    """A VirtualMachine from --machine, or assembled from the flags."""
+    from .lab import VirtualMachine, assemble, load
+
+    if getattr(args, "machine", None):
+        return load(cat, args.machine)
+    missing = [f for f in ("cpu", "model", "dimm", "count")
+               if getattr(args, f, None) in (None, "")]
+    if missing:
+        raise SystemExit(
+            "--machine 을 주거나 --cpu/--model/--dimm/--count 를 전부 줘라 "
+            f"(빠진 것: {', '.join('--' + m for m in missing)})"
+        )
+    return assemble(cat, VirtualMachine(
+        name=getattr(args, "name", None) or "즉석 조립",
+        cpu_id=args.cpu, sockets=args.sockets,
+        dimm_gb=args.dimm, dimm_count=args.count,
+        model_id=args.model, quant_id=args.quant, slots=args.slots,
+    ))
+
+
+def _cmd_lab_help(args) -> int:
+    print("사용법: svrspec lab build ... | svrspec lab show <머신.json>")
+    return 2
+
+
+def _cmd_lab_build(args) -> int:
+    from .lab import VirtualMachine, assemble, save
+
+    cat = _catalog(args)
+    asm = assemble(cat, VirtualMachine(
+        name=args.name, cpu_id=args.cpu, sockets=args.sockets,
+        dimm_gb=args.dimm, dimm_count=args.count,
+        model_id=args.model, quant_id=args.quant, slots=args.slots,
+    ))
+    _print_assembly(asm)
+    if args.out:
+        save(asm, args.out)
+        print(f"\n저장: {args.out}")
+    # A build with an error is still written -- the operator asked for it and
+    # the findings say why it will not work. The exit code is what a script
+    # branches on.
+    return 0 if asm.ok else 1
+
+
+def _cmd_lab_show(args) -> int:
+    cat = _catalog(args)
+    if not args.machine.exists():
+        print(f"svrspec: 파일이 없다: {args.machine}", file=sys.stderr)
+        return 1
+    from .lab import load
+
+    asm = load(cat, args.machine)
+    _print_assembly(asm)
+    return 0 if asm.ok else 1
+
+
+def _cmd_bench(args) -> int:
+    from .bench import frames_to_csv, run_bench
+    from .loadgen import build_load
+
+    cat = _catalog(args)
+    asm = _machine_from_args(cat, args)
+    workload = _workload_from(args)
+
+    params: dict = {}
+    if args.profile == "replay":
+        params = dict(date=args.date, storm_size=workload.storm_size,
+                      storms_per_day=workload.storms_per_day)
+    elif args.profile == "ramp":
+        params = dict(start_rate=args.from_rate, end_rate=args.to_rate,
+                      hours=args.hours or 24.0)
+    elif args.profile == "spike":
+        params = dict(base_rate=args.rate, peak_rate=args.peak)
+    else:  # soak
+        params = dict(rate=args.rate, hours=args.hours or 72.0)
+
+    alarms, profile = build_load(args.profile, seed=args.seed, **params)
+    result = run_bench(cat, asm, alarms, profile, workload=workload,
+                       frames=max(args.frames, 1), queue_limit=args.queue_limit)
+
+    _print_assembly(asm)
+    print()
+    print(f"부하    {profile.label}  ·  {profile.total_alarms:,}건  "
+          f"·  {profile.span_s / 3600:.0f}시간")
+    for note in profile.notes:
+        print(f"  ! {note}")
+    print()
+
+    if args.live:
+        _replay_frames(result)
+
+    s = result.stats
+    print("실행 결과")
+    print(report._table(["지표", "값", "판정 기준"], [
+        ["수신 / 전달", f"{s.received:,} / {s.delivered:,}건",
+         f"버림 {s.dropped:,}" if s.dropped else "유실 없음"],
+        ["평상시 p95", f"{s.p95_steady_s:.1f} s",
+         f"SLA {workload.sla_seconds:.0f}s {'충족' if s.sla_met else '초과'}"],
+        ["스톰 소진", f"{s.storm_drain_s / 60:.2f} 분",
+         f"목표 {workload.storm_drain_sla_s / 60:.0f}분 "
+         f"{'충족' if s.storm_sla_met else '초과'}"],
+        ["전체 p50 / p99", f"{s.p50_s:.1f} / {s.p99_s:.1f} s", "큐 대기 포함"],
+        ["최대 / 평균 큐", f"{s.max_queue} / {s.mean_queue:.1f}", ""],
+        ["가동률", f"{s.busy_fraction:.2%}", "구간 중 일한 시간"],
+        ["처리 토큰", f"{s.tokens_prefill:,} + {s.tokens_generated:,}", "prefill + 생성"],
+    ], aligns="lrl"))
+
+    if result.breach:
+        b = result.breach
+        print()
+        print(f"무너진 지점  {b['t_s'] / 3600:.1f}시간 지점, "
+              f"부하 {b['offered_rate']:,.0f}건/일에서 p95 {b['p95_s']:.1f}초로 "
+              f"SLA {workload.sla_seconds:.0f}초를 넘겼다")
+    elif profile.kind == "ramp":
+        print(f"\n무너진 지점  없음 — 최대 부하까지 SLA를 유지했다")
+
+    if args.csv:
+        args.csv.write_text(frames_to_csv(result), encoding="utf-8-sig")
+        print(f"\n프레임 CSV 저장: {args.csv} ({len(result.frames):,}행)")
+    return 0
+
+
+def _replay_frames(result) -> None:
+    """The run as four sparklines. The terminal's answer to the live gauges."""
+    frames = result.frames
+    if not frames:
+        return
+    rows = [
+        ("CPU 가동", [f.cpu_pct for f in frames], "%"),
+        ("대역폭", [f.bw_pct for f in frames], "%"),
+        ("대기 큐", [float(f.queued) for f in frames], ""),
+        ("도착", [float(f.arrived) for f in frames], "건"),
+        ("p95 누적", [f.p95_so_far_s for f in frames], "s"),
+    ]
+    width = max(_display_width(n) for n, *_ in rows)
+    span_h = (frames[-1].t_s + (frames[1].t_s - frames[0].t_s)) / 3600 if len(frames) > 1 else 0
+    print(f"실행 재생 ({len(frames)}프레임 · {span_h:.0f}시간)")
+    for name, values, unit in rows:
+        pad = " " * (width - _display_width(name))
+        top = max(values) if values else 0
+        print(f"  {name}{pad}  {_sparkline(values)}  최대 {top:,.1f}{unit}")
+    print(f"  {' ' * (width + 2)}0h{' ' * max(len(frames) - 5, 0)}{span_h:.0f}h")
+    print()
 
 
 # --------------------------------------------------------------------------

@@ -10,6 +10,8 @@ that sizing a server does not require access to one.
 
 from dataclasses import replace
 
+import pytest
+
 from svrspec.perf import (
     CONFIDENCE_UNCERTAINTY,
     FLOP_AMX_BF16,
@@ -247,3 +249,85 @@ def test_coefficient_provenance_is_visible_on_every_row(eff):
         assert c.notes, f"{c.id} has no note explaining where it came from"
         if c.source != "unverified":
             assert c.source_url, f"{c.id} claims a source but cites no URL"
+
+
+def test_under_populated_channels_cut_bandwidth_proportionally(catalog, eff):
+    """Two DIMMs in an eight-channel board is a quarter of the bandwidth.
+
+    This is the expensive real-world mistake the parameter exists to express:
+    the capacity looks fine, the bandwidth does not, and decode is bandwidth
+    bound so token generation drops by exactly the same fraction.
+    """
+    from svrspec.perf import effective_bandwidth
+
+    cpu = catalog.cpu("test-amx-8ch")
+    memory = catalog.memory_for(cpu, 1)
+    assert cpu.mem_channels == 8
+
+    full, _ = effective_bandwidth(cpu, memory, eff)
+    quarter, _ = effective_bandwidth(cpu, memory, eff, channels_populated=2)
+    assert quarter == pytest.approx(full / 4)
+
+    half, _ = effective_bandwidth(cpu, memory, eff, channels_populated=4)
+    assert half == pytest.approx(full / 2)
+
+
+def test_the_channel_parameter_defaults_to_no_change(catalog, eff):
+    """Every existing caller must be untouched by the new parameter."""
+    from svrspec.perf import effective_bandwidth
+
+    cpu = catalog.cpu("test-amx-8ch")
+    memory = catalog.memory_for(cpu, 1)
+    assert effective_bandwidth(cpu, memory, eff) == effective_bandwidth(
+        cpu, memory, eff, channels_populated=None
+    )
+    assert effective_bandwidth(cpu, memory, eff) == effective_bandwidth(
+        cpu, memory, eff, channels_populated=cpu.mem_channels
+    )
+    # Over-filling is clamped rather than inventing bandwidth that cannot exist.
+    assert effective_bandwidth(cpu, memory, eff, channels_populated=99) == \
+        effective_bandwidth(cpu, memory, eff)
+
+
+def test_under_population_slows_decode_and_says_so(catalog, eff, model_8b, q4):
+    """The prediction must carry the warning, not just the smaller number."""
+    from svrspec.perf import predict_throughput
+    from svrspec.types import TokenProfile
+
+    cpu = catalog.cpu("test-amx-8ch")
+    memory = catalog.memory_for(cpu, 1)
+    tokens = TokenProfile()
+
+    full = predict_throughput(model_8b, q4, cpu, memory, tokens, eff, slots=1)
+    thin = predict_throughput(
+        model_8b, q4, cpu, memory, tokens, eff, slots=1, channels_populated=2
+    )
+
+    assert thin.decode_tps_single < full.decode_tps_single
+    assert thin.effective_bandwidth_gbs == pytest.approx(
+        full.effective_bandwidth_gbs / 4
+    )
+    assert any("2/8" in w for w in thin.warnings)
+    assert not any("채널을" in w and "장착했다" in w for w in full.warnings)
+
+
+def test_an_empty_board_does_not_divide_by_zero(catalog, eff, model_8b, q4):
+    """Zero DIMMs is a real thing to ask about; it must answer, not crash.
+
+    `lab` guards against calling here with an empty board, but a guard that
+    lives only in the caller is one refactor away from being gone.
+    """
+    from svrspec.perf import effective_bandwidth, predict_throughput
+    from svrspec.types import TokenProfile
+
+    cpu = catalog.cpu("test-amx-8ch")
+    memory = catalog.memory_for(cpu, 1)
+
+    bandwidth, _ = effective_bandwidth(cpu, memory, eff, channels_populated=0)
+    assert bandwidth == 0.0
+
+    prediction = predict_throughput(
+        model_8b, q4, cpu, memory, TokenProfile(), eff, slots=1, channels_populated=0
+    )
+    assert prediction.decode_tps_single == 0.0
+    assert any("한 장도 장착되지" in w for w in prediction.warnings)

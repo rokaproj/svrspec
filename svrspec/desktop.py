@@ -90,6 +90,46 @@ class Api:
         except (CatalogError, ValueError, TypeError) as exc:
             return {"error": str(exc)}
 
+    def lab(self, params: dict | str) -> dict:
+        """Assemble one virtual machine and report what is wrong with it.
+
+        Cheap enough to call on every keystroke -- it is arithmetic over the
+        catalogue, not a simulation -- which is the point: an under-populated
+        DIMM layout should be visible while the operator is still choosing it,
+        not after they have bought it.
+        """
+        raw = json.loads(params) if isinstance(params, str) else (params or {})
+        if not isinstance(raw, dict):
+            return {"error": "expected an object of parameters"}
+        try:
+            from .gui import _params, lab_payload
+
+            return lab_payload(
+                self._catalog, _params(raw), str(raw.get("cpu", "")),
+                str(raw.get("name", "A")),
+            )
+        except (CatalogError, ValueError, TypeError, KeyError) as exc:
+            return {"error": str(exc)}
+
+    def bench(self, params: dict | str) -> dict:
+        """Run one load profile against one machine and return replay frames.
+
+        Not part of the live recompute: a full run is cheap in wall clock but
+        it is still a whole simulated day, so the page drives it from a button
+        and replays the returned frames itself.
+        """
+        raw = json.loads(params) if isinstance(params, str) else (params or {})
+        if not isinstance(raw, dict):
+            return {"error": "expected an object of parameters"}
+        try:
+            from .gui import _params, bench_payload
+
+            return bench_payload(
+                self._catalog, _params(raw), str(raw.get("cpu", "")), raw
+            )
+        except (CatalogError, ValueError, TypeError, KeyError) as exc:
+            return {"error": str(exc)}
+
     def update_check(self) -> dict:
         from .gui import update_payload
 

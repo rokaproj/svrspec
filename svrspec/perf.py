@@ -129,9 +129,25 @@ def effective_bandwidth(
     eff: Efficiency,
     sockets: int = 1,
     moe: bool = False,
+    channels_populated: int | None = None,
 ) -> tuple[float, str]:
-    """Achieved DRAM read bandwidth in bytes/s, and what limits it."""
-    per_socket_gbs = cpu.mem_channels * memory.effective_mts * 8 / 1000.0
+    """Achieved DRAM read bandwidth in bytes/s, and what limits it.
+
+    `channels_populated` is per socket, and defaults to every channel filled --
+    which is what a sizing report should assume, since nobody specifies a
+    half-populated board on purpose. The parameter exists because people build
+    them by accident: two 64 GB DIMMs in an eight-channel board is 128 GB and a
+    quarter of the bandwidth, and decode is bandwidth bound, so token
+    generation drops by the same quarter. Being unable to express that
+    configuration meant the tool could not warn about it.
+
+    Channels contribute their share linearly. Real controllers also lose some
+    interleaving efficiency at awkward counts, which is not modelled here --
+    so an under-populated figure is an optimistic bound, not a promise.
+    """
+    filled = cpu.mem_channels if channels_populated is None else channels_populated
+    filled = max(0, min(filled, cpu.mem_channels))
+    per_socket_gbs = filled * memory.effective_mts * 8 / 1000.0
     numa_factor = 1.0 if sockets == 1 else eff.dual_socket_efficiency(moe) * sockets
     # eta_bw derates the DRAM ceiling; the per-core figure is already achieved.
     dram_gbs = per_socket_gbs * numa_factor * eff.eta_bw(memory.ddr_gen).value
@@ -152,11 +168,14 @@ def predict_throughput(
     slots: int = 1,
     sockets: int = 1,
     measured_bpw: float | None = None,
+    channels_populated: int | None = None,
 ) -> ThroughputPrediction:
     warnings: list[str] = []
 
     is_moe = model.active_params_b is not None
-    bw_bytes, bw_limit = effective_bandwidth(cpu, memory, eff, sockets, moe=is_moe)
+    bw_bytes, bw_limit = effective_bandwidth(
+        cpu, memory, eff, sockets, moe=is_moe, channels_populated=channels_populated
+    )
     raw_flops, isa_used = peak_flops(cpu, sockets)
     eta_c = eff.eta_compute(isa_used)
     flops = raw_flops * eta_c.value
@@ -218,6 +237,24 @@ def predict_throughput(
             f"코어 수({cpu.cores * sockets})가 부족해 메모리 채널을 다 채우지 못한다: "
             f"채널 대역폭이 아니라 코어가 병목"
         )
+    if channels_populated is not None and channels_populated < cpu.mem_channels:
+        # Loud on purpose. Decode is bandwidth bound, so this is not a footnote:
+        # it is a proportional cut to token generation speed.
+        share = max(channels_populated, 0) / cpu.mem_channels
+        if share <= 0:
+            # A board with nothing in it. Answering "how many times faster
+            # would it be if populated" is a division by zero, and the honest
+            # answer is that this machine does not run at all.
+            warnings.append(
+                f"메모리가 한 장도 장착되지 않았다 — {cpu.model}은 "
+                f"{cpu.mem_channels}채널을 채워야 동작한다"
+            )
+        else:
+            warnings.append(
+                f"메모리 채널을 {channels_populated}/{cpu.mem_channels}만 장착했다 — "
+                f"대역폭이 {1 - share:.0%} 깎이고 토큰 생성 속도가 그만큼 떨어진다. "
+                f"같은 용량이라도 전 채널에 나눠 꽂으면 {1 / share:.1f}배 빠르다"
+            )
     if cpu.source == "unverified":
         # No warning text: with a whole catalogue unverified this would repeat
         # once per candidate and bury the warnings that differ between them. The

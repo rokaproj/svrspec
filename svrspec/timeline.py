@@ -245,7 +245,7 @@ def build_timeline(
     total_prefill_s = 0.0
     total_decode_s = 0.0
     for seg in trace.segments:
-        rates = _rates(seg, ceilings)
+        rates = segment_rates(seg, ceilings)
         # Phase occupancy: charge the segment to whichever phase held the
         # machine. A segment with both running counts for both, weighted.
         if seg.active:
@@ -310,7 +310,9 @@ def build_timeline(
 
 
 @dataclass(frozen=True)
-class _Rates:
+class SegmentRates:
+    """Instantaneous resource draw during one constant-rate segment."""
+
     bandwidth_bytes_s: float
     flops: float
     prefill_tps: float
@@ -318,10 +320,18 @@ class _Rates:
     kv_bytes: float
 
 
-def _rates(seg: SimSegment, c: Ceilings) -> _Rates:
-    """Instantaneous resource draw during one constant-rate segment."""
+def segment_rates(seg: SimSegment, c: Ceilings) -> SegmentRates:
+    """Convert one segment into the resources it draws while it runs.
+
+    Public because it is the single definition of how this project turns work
+    into bytes and flops, and more than one view needs it: the 15-minute
+    resource timeline, the fixed-period host samples in `hostsim`, and the
+    bench frames in `bench`. Each used to carry its own copy, and copies of a
+    formula drift until two screens quote different bandwidths for the same
+    second.
+    """
     if seg.span_s <= 0:
-        return _Rates(0.0, 0.0, 0.0, 0.0, 0.0)
+        return SegmentRates(0.0, 0.0, 0.0, 0.0, 0.0)
 
     prefill_tps = seg.prefill_tokens / seg.span_s
     decode_tps = seg.decode_tokens / seg.span_s
@@ -337,7 +347,7 @@ def _rates(seg: SimSegment, c: Ceilings) -> _Rates:
     # Prefill: the weights stream once per micro-batch, not once per token.
     prefill_bytes_s = (prefill_tps / c.ubatch) * c.weight_bytes if c.ubatch else 0.0
 
-    return _Rates(
+    return SegmentRates(
         bandwidth_bytes_s=decode_bytes_s + prefill_bytes_s,
         flops=(prefill_tps + decode_tps) * c.flops_per_token,
         prefill_tps=prefill_tps,
@@ -365,7 +375,7 @@ class _Accumulator:
         self.saturated_bandwidth_s = 0.0
         self.saturated_compute_s = 0.0
 
-    def add(self, seg: SimSegment, r: _Rates, slice_s: float, c: Ceilings) -> None:
+    def add(self, seg: SimSegment, r: SegmentRates, slice_s: float, c: Ceilings) -> None:
         self.busy_s += slice_s
         self.bytes += r.bandwidth_bytes_s * slice_s
         self.flops += r.flops * slice_s

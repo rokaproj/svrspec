@@ -51,6 +51,12 @@ LIMITS = {
     "output_tokens": (1, 32_000),
     "sockets": (1, 8),
     "dpc": (1, 2),
+    # The virtual lab builds a board by hand, so DIMM capacity and count are
+    # inputs rather than something the sizer derives. Zero DIMMs is allowed on
+    # purpose: "no DIMMs" is a configuration the lab has to be able to report
+    # on, not one it should refuse to represent.
+    "dimm_gb": (1, 1_024),
+    "dimm_count": (0, 64),
 }
 
 DEFAULTS = {
@@ -67,6 +73,8 @@ DEFAULTS = {
     "output_tokens": 250,
     "sockets": 1,
     "dpc": 1,
+    "dimm_gb": 32,
+    "dimm_count": 8,
 }
 
 
@@ -143,6 +151,30 @@ def catalog_payload(cat: Catalog) -> dict:
         ],
         "quants": [
             {"id": q.id, "bpw": q.bits_per_weight, "quality": q.quality} for q in cat.quants
+        ],
+        # The virtual lab picks a part by hand instead of sweeping the whole
+        # catalogue, so the page needs the CPU list up front -- the same list
+        # the sizing table draws, in the same order it sorts by.
+        "cpus": [
+            {
+                "id": c.id,
+                "label": f"{c.vendor} {c.model}",
+                "vendor": c.vendor,
+                "model": c.model,
+                "family": c.family,
+                "cores": c.cores,
+                "threads": c.threads,
+                "ghz": c.all_core_turbo_ghz,
+                "isa": widest_isa(c),
+                "mem_channels": c.mem_channels,
+                "ddr_gen": c.ddr_gen,
+                "max_ddr_mts": c.max_ddr_mts,
+                "sockets_max": c.sockets_max,
+                "max_mem_gb": c.max_mem_gb,
+                "tdp_w": c.tdp_w,
+                "price_usd": c.price_usd,
+            }
+            for c in sorted(cat.cpus, key=lambda c: (c.vendor, -c.mem_channels, c.model))
         ],
         "counts": {
             "models": len(cat.models),
@@ -278,6 +310,32 @@ def _finite(value) -> float | None:
     if f != f or f in (float("inf"), float("-inf")):
         return None
     return f
+
+
+def _r(value, digits: int = 2) -> float | None:
+    """`round`, but an infinity or a NaN becomes null instead of poisoning JSON."""
+    f = _finite(value)
+    return round(f, digits) if f is not None else None
+
+
+def _clean(value):
+    """Deep-sanitise a payload built by another module.
+
+    The lab and bench engines are free to put whatever they like in `params`,
+    `worst` and the machine summary. Anything that reaches `json.dumps` with a
+    non-finite float would either be rejected (`allow_nan=False`) or emitted as
+    a bare `Infinity`, which `JSON.parse` refuses. Neither is a failure the
+    browser can do anything with, so it is dealt with here instead.
+    """
+    if isinstance(value, dict):
+        return {str(k): _clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_clean(v) for v in value]
+    if isinstance(value, bool) or value is None or isinstance(value, (int, str)):
+        return value
+    if isinstance(value, float):
+        return _finite(value)
+    return str(value)
 
 
 def _run_timeline(model, quant, cpu, memory, eff, workload, sockets, reference):
@@ -750,6 +808,397 @@ def update_payload() -> dict:
 
 
 # --------------------------------------------------------------------------
+# Virtual lab: assemble a board by hand, then load-test it
+# --------------------------------------------------------------------------
+#
+# Two payloads with deliberately different costs, and the split is the whole
+# design. `lab_payload` is arithmetic over the catalogue -- microseconds -- so
+# it runs on every dropdown change and the warning about a half-populated board
+# appears while the operator is still turning the knob. `bench_payload` replays
+# a whole simulated load through the queue engine, so it runs on a button and
+# its result goes stale when the inputs move, exactly like `capacity_payload`.
+
+
+def _findings(items) -> list[dict]:
+    """`Finding` -> wire. The remedy travels with the problem, always.
+
+    A warning that names a broken build and stops there is worse than none: it
+    tells the operator something is wrong and leaves them to guess. Every
+    finding the lab raises knows how to fix itself, so the field is carried
+    here rather than left to the page to invent.
+    """
+    out = []
+    for f in items or ():
+        out.append(
+            {
+                "level": str(getattr(f, "level", "info")),
+                "code": str(getattr(f, "code", "")),
+                "message": str(getattr(f, "message", "")),
+                "remedy": str(getattr(f, "remedy", "") or ""),
+            }
+        )
+    return out
+
+
+def _dimm_option(option: dict) -> dict:
+    """One buildable DIMM combination, normalised for the dropdown.
+
+    Accepts the engine's naming loosely on purpose: this is the only place the
+    two modules meet, and a key rename on the far side should widen a dropdown
+    entry, not blank the panel out.
+    """
+    o = dict(option)
+    gb = int(o.get("dimm_gb") or 0)
+    count = int(o.get("count") or o.get("dimm_count") or 0)
+    return {
+        "dimm_gb": gb,
+        "count": count,
+        "ram_total_gb": int(o.get("ram_total") or o.get("ram_total_gb") or gb * count),
+        "channels_populated": int(o.get("channels_populated") or 0),
+        "dpc": int(o.get("dpc") or o.get("dimms_per_channel") or 1),
+    }
+
+
+def _assemble(cat: Catalog, p: dict, cpu_id: str, name: str = "A"):
+    """Build the machine the request describes. Never raises on a bad *build*.
+
+    Imported lazily so that a partially installed tree still serves the sizing
+    screen: the lab is an added surface, not a load-time dependency of it.
+    """
+    from .lab import VirtualMachine, assemble
+
+    vm = VirtualMachine(
+        name=str(name)[:40] or "A",
+        cpu_id=cpu_id,
+        sockets=p["sockets"],
+        dimm_gb=p["dimm_gb"],
+        dimm_count=p["dimm_count"],
+        model_id=p["model"] or cat.models[0].id,
+        quant_id=p["quant"],
+        slots=p["slots"],
+    )
+    return vm, assemble(cat, vm, _workload(p).tokens)
+
+
+def _pct_loss(now: float | None, full: float | None) -> float | None:
+    """How much of the full-channel figure this build gave up, as a percent."""
+    a, b = _finite(now), _finite(full)
+    if a is None or b is None or b <= 0:
+        return None
+    return round(max(0.0, (1.0 - a / b)) * 100, 1)
+
+
+def lab_payload(cat: Catalog, p: dict, cpu_id: str, name: str = "A") -> dict:
+    """One hand-built machine, and everything wrong with it.
+
+    Cheap by construction -- `assemble` is catalogue lookups and a roofline, no
+    simulation, about a third of a millisecond -- which is what lets the page
+    recompute on every keystroke. The expensive question ("what load does it
+    survive") is a separate route on a separate button.
+    """
+    vm, asm = _assemble(cat, p, cpu_id, name)
+    return _lab_block(cat, vm, asm)
+
+
+def _lab_block(cat: Catalog, vm, asm) -> dict:
+    """The assembled machine, flattened for the wire.
+
+    Split out from `lab_payload` so the bench route can report the machine it
+    actually ran without assembling it a second time -- one `Assembly`, one
+    description of it, no chance of the two disagreeing.
+    """
+    cpu, mem, model, quant = asm.cpu, asm.memory, asm.model, asm.quant
+    sockets = vm.sockets
+
+    channels_total = int(asm.channels_total)
+    populated = int(asm.channels_populated)
+    findings = _findings(asm.findings)
+    errors = sum(1 for f in findings if f["level"] == "error")
+    warnings = sum(1 for f in findings if f["level"] == "warn")
+
+    # The headline the mock-up asked for: part, socket count, channel fill and
+    # the DIMM arithmetic on one line, because that is the sentence somebody
+    # reads back to a vendor when they order the box.
+    headline = (
+        f"{cpu.vendor} {cpu.model} × {sockets}소켓 ({channels_total}채널) · "
+        f"{vm.dimm_count} × {vm.dimm_gb}GB = {asm.ram_total_gb}GB"
+    )
+
+    return {
+        "machine": {
+            "name": vm.name,
+            "cpu_id": vm.cpu_id,
+            "sockets": vm.sockets,
+            "dimm_gb": vm.dimm_gb,
+            "dimm_count": vm.dimm_count,
+            "model_id": vm.model_id,
+            "quant_id": vm.quant_id,
+            "slots": vm.slots,
+        },
+        "headline": headline,
+        "cpu": {
+            "id": cpu.id,
+            "label": f"{cpu.vendor} {cpu.model}",
+            "family": cpu.family,
+            "cores": cpu.cores * sockets,
+            "threads": cpu.threads * sockets,
+            "ghz": cpu.all_core_turbo_ghz,
+            "isa": widest_isa(cpu),
+            "sockets": sockets,
+            "sockets_max": cpu.sockets_max,
+            "channels_per_socket": cpu.mem_channels,
+            "max_mem_gb": cpu.max_mem_gb * sockets,
+            "tdp_w": cpu.tdp_w * sockets,
+            "l3_mb": cpu.l3_mb * sockets,
+            "socket": cpu.socket,
+            "price_usd": (cpu.price_usd * sockets) if cpu.price_usd else None,
+        },
+        "memory": {
+            "ddr_gen": mem.ddr_gen,
+            "rated_mts": mem.rated_mts,
+            "effective_mts": mem.effective_mts,
+            "dimms_per_channel": int(asm.dimms_per_channel),
+            "dimm_gb": vm.dimm_gb,
+            "kind": mem.kind,
+            "label": f"{mem.ddr_gen}-{mem.effective_mts} {mem.kind}",
+            "derated": mem.effective_mts < mem.rated_mts,
+        },
+        "model": {
+            "id": model.id,
+            "name": model.name,
+            "params_b": _r(model.params_b, 2),
+            "active_params_b": _r(model.active_params_b, 2) if model.active_params_b else None,
+            "quant": quant.id,
+            "bpw": quant.bits_per_weight,
+            "kv_kib": _r(kv_bytes_per_token(model) / 1024, 1),
+            "slots": vm.slots,
+        },
+        "channels": {
+            "total": channels_total,
+            "populated": populated,
+            "dimms_per_channel": int(asm.dimms_per_channel),
+            "fill_pct": _r(100.0 * populated / channels_total, 1) if channels_total else None,
+        },
+        "ram": {
+            "total_gb": _r(asm.ram_total_gb, 1),
+            "used_gb": _r(asm.ram_used_gb, 2),
+            "free_gb": _r(max(0.0, asm.ram_total_gb - asm.ram_used_gb), 2),
+            "pct": _r(min(100.0, 100.0 * asm.ram_used_gb / asm.ram_total_gb), 1)
+            if asm.ram_total_gb else None,
+        },
+        "bandwidth": {
+            "gbs": _r(asm.bandwidth_gbs, 1),
+            "full_gbs": _r(asm.bandwidth_full_gbs, 1),
+            "loss_pct": _pct_loss(asm.bandwidth_gbs, asm.bandwidth_full_gbs),
+        },
+        "throughput": {
+            "prefill_tps": _r(asm.prefill_tps, 1),
+            "decode_tps_single": _r(asm.decode_tps_single, 2),
+            "decode_tps_full": _r(asm.decode_tps_full, 2),
+            "decode_loss_pct": _pct_loss(asm.decode_tps_single, asm.decode_tps_full),
+            "uncertainty_pct": _r((asm.uncertainty or 0.0) * 100, 0),
+        },
+        "findings": findings,
+        "ok": bool(asm.ok),
+        "errors": errors,
+        "warnings": warnings,
+        "options": [_dimm_option(o) for o in _dimm_options(cat, cpu, sockets)],
+    }
+
+
+def _dimm_options(cat: Catalog, cpu, sockets: int) -> list:
+    from .lab import dimm_options
+
+    return list(dimm_options(cat, cpu, sockets))
+
+
+#: Per-profile numeric parameters the client may set, with bounds. Same rule as
+#: `LIMITS`: clamped, never trusted.
+BENCH_LIMITS = {
+    "count": (0, 100_000),
+    "storm_size": (0, 5_000),
+    "storms_per_day": (0, 100),
+    "start_rate": (1, 200_000),
+    "end_rate": (1, 200_000),
+    "base_rate": (1, 200_000),
+    "peak_rate": (1, 200_000),
+    "rate": (1, 200_000),
+    "hours": (1, 336),
+    "spike_at_h": (0, 335),
+    "spike_minutes": (1, 1_440),
+}
+
+BENCH_DEFAULTS = {
+    "count": 0,          # 0 means "the whole generated day"
+    "storm_size": 40,
+    "storms_per_day": 2,
+    "start_rate": 100,
+    "end_rate": 2_000,
+    "base_rate": 165,
+    "peak_rate": 800,
+    "rate": 300,
+    "hours": 24,
+    "spike_at_h": 12,
+    "spike_minutes": 30,
+}
+
+#: Which parameters each profile actually takes. Sending a ramp's fields to a
+#: soak run would be silently ignored by the engine; dropping them here means
+#: the cache key and the reproduction record only ever carry live inputs.
+BENCH_KEYS = {
+    "replay": ("count", "storm_size", "storms_per_day"),
+    "ramp": ("start_rate", "end_rate", "hours"),
+    "spike": ("base_rate", "peak_rate", "spike_at_h", "spike_minutes"),
+    "soak": ("rate", "hours"),
+}
+
+DEFAULT_BENCH_DATE = "2026-06-01"
+DEFAULT_BENCH_SEED = 20260730
+#: 600 frames is the resolution the browser plays back. Raw events are hundreds
+#: of kilobytes; folded frames are tens, and a display cannot resolve more.
+DEFAULT_FRAMES = 600
+
+
+def _bench_kind(raw: dict) -> str:
+    from .loadgen import KINDS
+
+    kind = str(raw.get("kind", "replay"))
+    return kind if kind in KINDS else "replay"
+
+
+def _bench_params(kind: str, raw: dict) -> dict:
+    """The profile's own knobs, clamped. Unknown keys never reach the engine."""
+    source = raw if isinstance(raw, dict) else {}
+    out: dict = {}
+    for key in BENCH_KEYS.get(kind, ()):
+        low, high = BENCH_LIMITS[key]
+        try:
+            value = int(float(source.get(key, BENCH_DEFAULTS[key])))
+        except (TypeError, ValueError):
+            value = BENCH_DEFAULTS[key]
+        out[key] = max(low, min(high, value))
+    if kind == "replay":
+        date = str(source.get("date", DEFAULT_BENCH_DATE))
+        parts = date.split("-")
+        ok = len(parts) == 3 and all(p.isdigit() for p in parts) and len(parts[0]) == 4
+        out["date"] = date if ok else DEFAULT_BENCH_DATE
+        # The engine reads None as "however many the day generates".
+        out["count"] = out["count"] or None
+    return out
+
+
+def _frame_row(f) -> dict:
+    return {
+        "t_s": _r(f.t_s, 2),
+        "queued": int(f.queued),
+        "active": int(f.active),
+        "cpu_pct": _r(f.cpu_pct, 1),
+        "bw_gbs": _r(f.bw_gbs, 2),
+        "bw_pct": _r(f.bw_pct, 1),
+        "compute_pct": _r(f.compute_pct, 1),
+        "kv_gb": _r(f.kv_gb, 3),
+        "ram_gb": _r(f.ram_gb, 2),
+        "arrived": int(f.arrived),
+        "delivered": int(f.delivered),
+        "offered_rate": _r(f.offered_rate, 1),
+        "p95_so_far_s": _r(f.p95_so_far_s, 2),
+    }
+
+
+def _stats_block(stats) -> dict | None:
+    from dataclasses import asdict, is_dataclass
+
+    if stats is None:
+        return None
+    raw = asdict(stats) if is_dataclass(stats) else dict(stats)
+    return _clean({k: (_r(v, 3) if isinstance(v, float) else v) for k, v in raw.items()})
+
+
+def _profile_block(profile) -> dict:
+    return {
+        "kind": str(getattr(profile, "kind", "")),
+        "label": str(getattr(profile, "label", "")),
+        "span_s": _r(getattr(profile, "span_s", 0.0), 1),
+        "total_alarms": int(getattr(profile, "total_alarms", 0) or 0),
+        "params": _clean(dict(getattr(profile, "params", {}) or {})),
+        "notes": [str(n) for n in (getattr(profile, "notes", ()) or ())],
+    }
+
+
+def bench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict) -> dict:
+    """Run one load profile against one hand-built machine.
+
+    Never wired to the live recompute. The run itself is tens of milliseconds
+    of virtual time, but the load generation in front of it is not free and the
+    result is a 600-frame recording the page then plays back -- recomputing all
+    of that per keystroke would throw away a finished playback for nothing.
+    Same discipline, and for the same reason, as `capacity_payload`.
+    """
+    from . import bench as bench_engine
+    from .loadgen import build_load
+
+    name = str(raw.get("name", "A"))
+    vm, asm = _assemble(cat, p, cpu_id, name)
+    machine = _lab_block(cat, vm, asm)
+
+    kind = _bench_kind(raw)
+    profile_params = _bench_params(kind, raw.get("profile") or {})
+    try:
+        seed = int(raw.get("seed", DEFAULT_BENCH_SEED))
+    except (TypeError, ValueError):
+        seed = DEFAULT_BENCH_SEED
+    seed = max(0, min(2**31 - 1, seed))
+
+    base = {
+        "name": name,
+        "kind": kind,
+        "seed": seed,
+        "profile_params": _clean(profile_params),
+        "machine": machine,
+        "findings": machine["findings"],
+        "ok": machine["ok"],
+        "frames": [],
+        "breach": None,
+        "stats": None,
+        "worst": [],
+        "notes": [],
+        "profile": None,
+    }
+
+    # A build with an error-level finding is not a machine; running load
+    # against it would produce numbers for hardware that cannot be ordered.
+    # The findings already say what to fix, so say that and stop.
+    if not machine["ok"]:
+        base["blocked"] = "구성에 오류가 있다 — 아래 문제를 먼저 고쳐야 부하 테스트를 돌릴 수 있다."
+        return base
+
+    try:
+        frames = int(raw.get("frames", DEFAULT_FRAMES))
+    except (TypeError, ValueError):
+        frames = DEFAULT_FRAMES
+    frames = max(60, min(1_200, frames))
+
+    alarms, profile = build_load(kind, seed=seed, **profile_params)
+    result = bench_engine.run_bench(
+        cat, asm, alarms, profile, workload=_workload(p), frames=frames, worst_n=10
+    )
+
+    base["blocked"] = None
+    base["profile"] = _profile_block(result.profile)
+    base["frames"] = [_frame_row(f) for f in result.frames]
+    base["breach"] = _clean(result.breach) if result.breach else None
+    base["stats"] = _stats_block(result.stats)
+    base["worst"] = _clean(list(result.worst or ()))
+    base["notes"] = [str(n) for n in (result.notes or ())]
+    base["machine_summary"] = _clean(dict(result.machine or {}))
+    base["sla"] = {
+        "sla_seconds": _r(_workload(p).sla_seconds, 1),
+        "slots": vm.slots,
+    }
+    return base
+
+
+# --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 
@@ -775,8 +1224,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json(self, payload: dict, code: int = 200) -> None:
-        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+        # allow_nan=False on purpose: Python happily writes a bare `Infinity`,
+        # and `JSON.parse` rejects it, so the page would fail on a body that
+        # looked fine on this side. Better to raise here, where the handler
+        # turns it into an error the browser can actually display.
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        self._send(code, body.encode("utf-8"), "application/json; charset=utf-8")
 
     def _error(self, message: str, code: int = 400) -> None:
         self._json({"error": message}, code)
@@ -797,7 +1250,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
-        if route not in ("/api/size", "/api/resources", "/api/capacity"):
+        if route not in ("/api/size", "/api/resources", "/api/capacity",
+                         "/api/lab", "/api/bench"):
             self._error("not found", 404)
             return
         try:
@@ -822,10 +1276,23 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(capacity_payload(
                     self.catalog, _params(raw), str(raw.get("cpu", "")), _axes(raw)
                 ))
+            elif route == "/api/lab":
+                self._json(lab_payload(
+                    self.catalog, _params(raw), str(raw.get("cpu", "")),
+                    str(raw.get("name", "A")),
+                ))
+            elif route == "/api/bench":
+                self._json(bench_payload(
+                    self.catalog, _params(raw), str(raw.get("cpu", "")), raw
+                ))
             else:
                 self._json(size_payload(self.catalog, _params(raw)))
         except (CatalogError, ValueError, TypeError) as exc:
             self._error(str(exc))
+        except ImportError as exc:
+            # The lab and the bench are optional engines. A tree missing one of
+            # them must say so in a sentence, not hand the browser a traceback.
+            self._error(f"이 빌드에는 가상 랩 엔진이 없다: {exc}")
 
     def _download(self, route) -> None:
         query = {k: v[0] for k, v in parse_qs(route.query).items()}
@@ -927,9 +1394,9 @@ main{
 @media (max-width:1340px){:root{--rail-w:300px}}
 @media (max-width:900px){
   main{grid-template-columns:minmax(0,1fr)}
-  #rail{position:static; max-height:none; overflow:visible}
+  #rail,#lab-rail{position:static; max-height:none; overflow:visible}
 }
-#rail{
+#rail,#lab-rail{
   position:sticky; top:calc(var(--header-h) + var(--s5));
   display:flex; flex-direction:column; gap:var(--s3);
   /* Own scrollbar: a long form must not be clipped by the viewport, and the
@@ -980,7 +1447,7 @@ button:hover{border-color:var(--text-tertiary)}
 }
 .actions a:hover{border-color:var(--accent); color:var(--accent); text-decoration:none}
 
-#results{display:flex; flex-direction:column; gap:var(--s5); min-width:0}
+#results,#lab-results{display:flex; flex-direction:column; gap:var(--s5); min-width:0}
 #results.stale{opacity:0.55}
 @media (prefers-reduced-motion:no-preference){
   #results{transition:opacity 120ms ease-out}
@@ -1144,6 +1611,111 @@ tbody tr.weak{background:var(--selected-bg); box-shadow:inset 3px 0 0 var(--erro
    markers, and a stretched circle reads as a different mark. */
 .curve svg{width:100%; height:auto; display:block}
 .curve .axis{font-size:10px; fill:var(--text-tertiary)}
+
+/* --- Virtual lab -------------------------------------------------------
+   A second screen, not a second product: it reuses the rail geometry, the
+   card, the table and every token the sizing screen already uses. The only
+   things that are new here are the ones the sizing screen has no equivalent
+   for -- a channel strip, a findings list, and a transport for playing a
+   recorded run back. */
+nav.views{display:flex; gap:var(--s1)}
+nav.views button[aria-pressed="true"]{
+  border-color:var(--accent); color:var(--accent); background:var(--selected-bg);
+}
+main[hidden]{display:none}
+
+.mach-tabs{display:flex; gap:var(--s2); margin-top:var(--s1)}
+.mach-tabs button{flex:1}
+.mach-tabs button[aria-pressed="true"]{
+  border-color:var(--accent); color:var(--accent); background:var(--selected-bg);
+}
+
+.asm-pair{display:grid; gap:var(--s4);
+  grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.asm .headline{font:600 var(--fs-md)/1.45 var(--font); margin-top:var(--s2)}
+.asm.editing{border-left:3px solid var(--accent)}
+.asm dl{display:grid; grid-template-columns:auto minmax(0,1fr);
+  gap:var(--s1) var(--s3); margin:var(--s3) 0 0; font-size:var(--fs-sm)}
+.asm dt{font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.05em;
+  color:var(--text-tertiary); align-self:center; white-space:nowrap}
+.asm dd{margin:0; font-variant-numeric:tabular-nums; min-width:0}
+.asm .was{color:var(--text-tertiary)}
+.asm .loss{color:var(--error); font-weight:600}
+
+/* Eight boxes, filled ones lit. The picture a datasheet draws of a board,
+   because "2/8 채널" as a number is easy to read past. */
+.chan{display:flex; gap:3px; margin-top:var(--s2)}
+.chan i{flex:1; height:14px; border-radius:2px;
+  background:var(--bg-tertiary); border:1px solid var(--border)}
+.chan i.on{background:var(--accent); border-color:var(--accent)}
+
+.find{list-style:none; margin:var(--s3) 0 0; padding:0;
+  display:flex; flex-direction:column; gap:var(--s2)}
+.find li{
+  border:1px solid var(--border); border-left:3px solid var(--text-tertiary);
+  border-radius:var(--radius-sm); background:var(--bg-tertiary);
+  padding:var(--s2) var(--s3); font-size:var(--fs-sm);
+}
+.find li.f-error{border-left-color:var(--error)}
+.find li.f-warn{border-left-color:var(--warning)}
+.find li.f-info{border-left-color:var(--accent)}
+.find .lv{font-size:10px; font-weight:600; letter-spacing:.05em;
+  text-transform:uppercase; margin-right:var(--s2)}
+.find li.f-error .lv{color:var(--error)}
+.find li.f-warn .lv{color:var(--warning)}
+.find li.f-info .lv{color:var(--accent)}
+/* The remedy is not optional decoration: a warning without one just tells
+   somebody their build is broken and leaves them there. */
+.find .fix{display:block; margin-top:var(--s1); font-size:var(--fs-xs);
+  color:var(--text-secondary)}
+
+.gauges{display:grid; gap:var(--s3); margin-top:var(--s3);
+  grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.gauge{border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg-tertiary); padding:var(--s2) var(--s3)}
+.gauge .g-name{font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary)}
+.gauge .g-val{font-size:var(--fs-lg); font-weight:600; line-height:1.25;
+  font-variant-numeric:tabular-nums}
+.gauge .g-sub{font-size:10px; color:var(--text-tertiary)}
+.bar{height:10px; margin-top:var(--s1); border-radius:2px; overflow:hidden;
+  background:var(--bg-primary); border:1px solid var(--border)}
+.bar span{display:block; height:100%; width:0; background:var(--accent)}
+/* Four resources, four fills. Same rule as the task manager: if two meters
+   are the same colour the reader assumes they are the same number. */
+.g-queue span{background:var(--warning)}
+.g-bw span{background:var(--success)}
+.g-ram span{background:var(--text-secondary)}
+.bar.hot span{background:var(--error)}
+
+.transport{display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2);
+  margin-top:var(--s4)}
+.transport .spacer{flex:1; min-width:var(--s2)}
+.speeds{display:flex; gap:var(--s1)}
+.speeds button[aria-pressed="true"]{border-color:var(--accent); color:var(--accent)}
+.clock{font:600 var(--fs-md)/1 var(--mono); font-variant-numeric:tabular-nums}
+.scrub{display:flex; align-items:center; gap:var(--s3); margin-top:var(--s3)}
+.scrub input[type=range]{flex:1; min-width:120px; height:26px;
+  accent-color:var(--accent); background:transparent; border:0; padding:0}
+.progress{height:6px; border-radius:3px; margin-top:var(--s2);
+  background:var(--bg-tertiary); border:1px solid var(--border); overflow:hidden}
+.progress span{display:block; height:100%; width:0; background:var(--accent)}
+
+.breach{
+  display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s1) var(--s3);
+  margin-top:var(--s3); padding:var(--s2) var(--s3);
+  border:1px solid var(--border); border-left:3px solid var(--error);
+  border-radius:var(--radius-sm); background:var(--bg-tertiary);
+  font-size:var(--fs-sm);
+}
+.breach.clear{border-left-color:var(--success)}
+.breach .why{color:var(--text-secondary); font-size:var(--fs-xs)}
+.bench-run{display:flex; flex-wrap:wrap; align-items:center; gap:var(--s3);
+  margin-top:var(--s3)}
+.bench-metrics{display:flex; flex-wrap:wrap; gap:var(--s2); margin-top:var(--s3)}
+.bench-metrics button[aria-pressed="true"]{border-color:var(--accent); color:var(--accent)}
+.bench-chart svg{width:100%; height:220px; display:block}
+.bench-chart .axis{font-size:10px; fill:var(--text-tertiary)}
+.pgroup[hidden]{display:none}
 """
 
 def app_html(mode: str = "server") -> str:
@@ -1162,12 +1734,16 @@ def app_html(mode: str = "server") -> str:
 <header>
   <h1>svrspec</h1>
   <span class="tag">GPU 서빙 서버 스펙 산정</span>
+  <nav class="views" aria-label="화면 전환">
+    <button id="view-size" type="button" aria-pressed="true">산정</button>
+    <button id="view-lab" type="button" aria-pressed="false">가상 랩</button>
+  </nav>
   <span class="spacer"></span>
   <button id="update" type="button" hidden></button>
   <button id="theme" type="button" aria-label="화면 테마 전환">테마: 자동</button>
 </header>
 
-<main>
+<main id="size">
   <form id="rail" aria-label="산정 조건">
     <fieldset>
       <legend>모델</legend>
@@ -1282,6 +1858,161 @@ def app_html(mode: str = "server") -> str:
 
   <div id="results" aria-live="polite">
     <div id="empty" class="card">카탈로그를 불러오는 중…</div>
+  </div>
+</main>
+
+<main id="lab" hidden>
+  <form id="lab-rail" aria-label="가상 서버 조립">
+    <fieldset>
+      <legend>머신</legend>
+      <div class="mach-tabs" role="group" aria-label="편집할 머신">
+        <button id="mach-a" type="button" aria-pressed="true">A</button>
+        <button id="mach-b" type="button" aria-pressed="false" disabled>B</button>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="lab-compare">
+        <label for="lab-compare">B와 비교</label>
+      </div>
+      <span class="hint">두 벌을 조립해 같은 부하로 돌리면 프레임이 겹쳐 그려진다.</span>
+    </fieldset>
+
+    <fieldset>
+      <legend>가상 서버 조립</legend>
+      <div class="field">
+        <label for="lab-cpu">CPU</label>
+        <select id="lab-cpu"></select>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="lab-sockets">소켓</label>
+          <select id="lab-sockets"></select>
+        </div>
+        <div class="field">
+          <label for="lab-dimm-gb">DIMM 용량</label>
+          <select id="lab-dimm-gb"></select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="lab-dimm-count">DIMM 개수</label>
+          <select id="lab-dimm-count"></select>
+        </div>
+        <div class="field">
+          <label for="lab-slots">동시 슬롯</label>
+          <input type="number" id="lab-slots" min="1" max="64">
+        </div>
+      </div>
+      <span class="hint" id="lab-build-hint"></span>
+    </fieldset>
+
+    <fieldset>
+      <legend>모델</legend>
+      <div class="field">
+        <label for="lab-model">LLM</label>
+        <select id="lab-model"></select>
+      </div>
+      <div class="field">
+        <label for="lab-quant">양자화</label>
+        <select id="lab-quant"></select>
+      </div>
+      <span class="hint">프롬프트 토큰과 지연 SLA는 산정 화면의 값을 그대로 쓴다.</span>
+    </fieldset>
+
+    <fieldset>
+      <legend>부하 테스트</legend>
+      <div class="field">
+        <label for="lab-profile">프로파일</label>
+        <select id="lab-profile">
+          <option value="replay">실측 재생 — 하루치를 그대로</option>
+          <option value="ramp" selected>램프 — 부하를 올려 무너지는 지점을 찾는다</option>
+          <option value="spike">스파이크 — 평시에서 급증</option>
+          <option value="soak">소크 — 균일 부하 장시간</option>
+        </select>
+      </div>
+
+      <div class="pgroup" id="pg-replay" hidden>
+        <div class="field">
+          <label for="bp-date">날짜</label>
+          <input type="date" id="bp-date" value="2026-06-01">
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="bp-count">건수(0=하루 전체)</label>
+            <input type="number" id="bp-count" min="0" max="100000" step="10" value="0">
+          </div>
+          <div class="field">
+            <label for="bp-storm-size">스톰 크기</label>
+            <input type="number" id="bp-storm-size" min="0" max="5000" value="40">
+          </div>
+        </div>
+        <div class="field">
+          <label for="bp-storms">스톰 횟수/일</label>
+          <input type="number" id="bp-storms" min="0" max="100" value="2">
+        </div>
+      </div>
+
+      <div class="pgroup" id="pg-ramp">
+        <div class="row">
+          <div class="field">
+            <label for="bp-start-rate">시작 부하(건/일)</label>
+            <input type="number" id="bp-start-rate" min="1" max="200000" step="50" value="100">
+          </div>
+          <div class="field">
+            <label for="bp-end-rate">끝 부하(건/일)</label>
+            <input type="number" id="bp-end-rate" min="1" max="200000" step="50" value="2000">
+          </div>
+        </div>
+        <div class="field">
+          <label for="bp-hours">구간(시간)</label>
+          <input type="number" id="bp-hours" min="1" max="336" value="24">
+        </div>
+      </div>
+
+      <div class="pgroup" id="pg-spike" hidden>
+        <div class="row">
+          <div class="field">
+            <label for="bp-base-rate">평시 부하(건/일)</label>
+            <input type="number" id="bp-base-rate" min="1" max="200000" step="10" value="165">
+          </div>
+          <div class="field">
+            <label for="bp-peak-rate">급증 부하(건/일)</label>
+            <input type="number" id="bp-peak-rate" min="1" max="200000" step="50" value="800">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="bp-spike-at">급증 시각(시)</label>
+            <input type="number" id="bp-spike-at" min="0" max="335" value="12">
+          </div>
+          <div class="field">
+            <label for="bp-spike-min">급증 길이(분)</label>
+            <input type="number" id="bp-spike-min" min="1" max="1440" value="30">
+          </div>
+        </div>
+      </div>
+
+      <div class="pgroup" id="pg-soak" hidden>
+        <div class="row">
+          <div class="field">
+            <label for="bp-rate">부하(건/일)</label>
+            <input type="number" id="bp-rate" min="1" max="200000" step="50" value="300">
+          </div>
+          <div class="field">
+            <label for="bp-soak-hours">구간(시간)</label>
+            <input type="number" id="bp-soak-hours" min="1" max="336" value="72">
+          </div>
+        </div>
+      </div>
+
+      <div class="bench-run">
+        <button id="lab-run" type="button">▶ 부하 테스트 실행</button>
+      </div>
+      <span class="hint" id="lab-run-hint">가상시간으로 즉시 완주한 뒤, 재생은 브라우저가 한다.</span>
+    </fieldset>
+  </form>
+
+  <div id="lab-results" aria-live="polite">
+    <div class="card">카탈로그를 불러오는 중…</div>
   </div>
 </main>
 
@@ -2448,6 +3179,923 @@ def app_html(mode: str = "server") -> str:
     }
   }
 
+  // ---- virtual lab -------------------------------------------------
+  // Two costs, two paths, and the split is the whole design of this screen.
+  // Assembly is arithmetic over the catalogue, so it runs on every change of
+  // every dropdown -- that immediacy is the point, because the operator has to
+  // see the bandwidth collapse while their hand is still on the control. The
+  // bench replays a whole load and hands back a 600-frame recording, so it runs
+  // on a button and goes stale when the inputs move. Same rule, and the same
+  // reason, as the capacity search on the other screen.
+  var STILL = false;
+  try{ STILL = window.matchMedia("(prefers-reduced-motion: reduce)").matches; }catch(e){}
+
+  var MACHINES = {A: null, B: null};
+  var lab = {
+    active: "A", compare: false,
+    asm: {A: null, B: null}, asmError: {A: null, B: null},
+    bench: {A: null, B: null},
+    benchKey: null, benchBusy: false, benchError: null, benchStale: false,
+    metric: "cpu_pct", optionSig: "", seq: 0, benchSeq: 0
+  };
+  var bench = null;   // live playback state, or null
+
+  function num(v){ return (typeof v === "number" && isFinite(v)) ? v : 0; }
+  function byId(id){ return document.getElementById(id); }
+  function labVal(id){ var n = byId(id); return n ? n.value : ""; }
+  function labNum(id, dflt){
+    var v = Number(labVal(id));
+    return isFinite(v) ? v : dflt;
+  }
+  function fillSelect(sel, pairs){
+    sel.textContent = "";
+    pairs.forEach(function(pair){
+      var o = document.createElement("option");
+      o.value = String(pair[0]);
+      o.textContent = pair[1];
+      sel.appendChild(o);
+    });
+  }
+  function cpuById(id){
+    return (catalog.cpus || []).filter(function(c){ return c.id === id; })[0] || null;
+  }
+  function fmtClock(t){
+    // Hours can pass 24 here: a soak profile is days long, and wrapping the
+    // clock would make the second day look like the first.
+    var s = Math.max(0, Math.round(num(t)));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
+  }
+
+  // ---- machine state ----
+  function defaultMachine(){
+    var cpus = catalog.cpus || [];
+    var cpu = cpus[0] || {id: "", mem_channels: 8, sockets_max: 1};
+    // Open on the widest memory bus in the catalogue: it is the build where an
+    // under-populated board costs the most, and therefore the one worth showing.
+    cpus.forEach(function(c){ if(c.mem_channels > cpu.mem_channels) cpu = c; });
+    return {cpu: cpu.id, sockets: 1, dimm_gb: 32,
+            dimm_count: cpu.mem_channels || 8,
+            model: byId("model").value, quant: byId("quant").value, slots: 4};
+  }
+  function readMachine(){
+    var m = MACHINES[lab.active];
+    if(!m) return;
+    m.cpu = labVal("lab-cpu") || m.cpu;
+    m.sockets = labNum("lab-sockets", m.sockets);
+    m.dimm_gb = labNum("lab-dimm-gb", m.dimm_gb);
+    m.dimm_count = labNum("lab-dimm-count", m.dimm_count);
+    m.model = labVal("lab-model") || m.model;
+    m.quant = labVal("lab-quant") || m.quant;
+    m.slots = labNum("lab-slots", m.slots);
+  }
+  function writeMachine(){
+    var m = MACHINES[lab.active];
+    byId("lab-cpu").value = m.cpu;
+    fillSockets();
+    byId("lab-sockets").value = String(m.sockets);
+    byId("lab-model").value = m.model;
+    byId("lab-quant").value = m.quant;
+    byId("lab-slots").value = String(m.slots);
+    lab.optionSig = "";     // the DIMM lists belong to a machine, not to the form
+  }
+  function fillSockets(){
+    var m = MACHINES[lab.active], cpu = cpuById(labVal("lab-cpu"));
+    var most = Math.max(1, (cpu && cpu.sockets_max) || 1);
+    var list = [];
+    for(var i = 1; i <= most; i++) list.push([i, i + "소켓"]);
+    fillSelect(byId("lab-sockets"), list);
+    if(m.sockets > most) m.sockets = most;
+    byId("lab-sockets").value = String(m.sockets);
+  }
+
+  // The DIMM count list is built from the board, not from the engine's list of
+  // "sensible" builds: two DIMMs in an eight-channel board is exactly the
+  // mistake this screen exists to show, and it must stay reachable from the
+  // dropdown. Capacities do come from the engine, because those are whatever
+  // the catalogue actually stocks.
+  function fillDimmSelects(d){
+    var m = MACHINES[lab.active];
+    var caps = [];
+    (d.options || []).forEach(function(o){
+      if(o.dimm_gb > 0 && caps.indexOf(o.dimm_gb) < 0) caps.push(o.dimm_gb);
+    });
+    if(!caps.length) caps = [m.dimm_gb];
+    caps.sort(function(a, b){ return a - b; });
+    var total = Math.max(1, num(d.channels.total) || 8);
+    var most = Math.max(1, Math.min(64, total * 2));
+    var changed = false;
+    // Snap first, then label: the count labels quote the chosen capacity, so
+    // building them against a capacity this board cannot take would print one
+    // wrong list before correcting itself.
+    if(caps.indexOf(m.dimm_gb) < 0){ m.dimm_gb = caps[0]; changed = true; }
+    if(m.dimm_count > most){ m.dimm_count = most; changed = true; }
+    if(m.dimm_count < 1){ m.dimm_count = 1; changed = true; }
+    var sig = lab.active + "|" + caps.join(",") + "|" + most + "|" + m.dimm_gb;
+
+    if(sig !== lab.optionSig){
+      lab.optionSig = sig;
+      fillSelect(byId("lab-dimm-gb"), caps.map(function(gb){ return [gb, gb + " GB"]; }));
+      var counts = [];
+      for(var i = 1; i <= most; i++){
+        var pop = Math.min(i, total), dpc = Math.ceil(i / total);
+        // Capacity and channel fill on the same line, because reading those two
+        // apart is exactly how somebody orders 128 GB at a quarter of the speed.
+        counts.push([i, i + "장 · " + (i * m.dimm_gb) + "GB · " + pop + "/" + total +
+                        "채널" + (dpc > 1 ? " · " + dpc + " DPC" : "")]);
+      }
+      fillSelect(byId("lab-dimm-count"), counts);
+    }
+    byId("lab-dimm-gb").value = String(m.dimm_gb);
+    byId("lab-dimm-count").value = String(m.dimm_count);
+    return changed;
+  }
+
+  // ---- transports ----
+  function labParams(key){
+    var m = MACHINES[key], p = params();
+    p.cpu = m.cpu; p.sockets = m.sockets;
+    p.dimm_gb = m.dimm_gb; p.dimm_count = m.dimm_count;
+    p.model = m.model; p.quant = m.quant; p.slots = m.slots;
+    p.name = key;
+    delete p.volumes; delete p.only_pass;   // neither reaches the lab engine
+    return p;
+  }
+  var NO_LAB_BRIDGE =
+    "이 데스크톱 빌드에는 가상 랩이 연결되어 있지 않다. 서버 모드(svrspec gui)에서 실행해라.";
+  function askLab(p){
+    if(DESKTOP){
+      if(!(window.pywebview.api && window.pywebview.api.lab))
+        return Promise.resolve({error: NO_LAB_BRIDGE});
+      return window.pywebview.api.lab(p);
+    }
+    return fetch("/api/lab", {method:"POST",
+                              headers:{"Content-Type":"application/json"},
+                              body: JSON.stringify(p)})
+      .then(function(r){ return r.json(); });
+  }
+  function askBench(p){
+    if(DESKTOP){
+      if(!(window.pywebview.api && window.pywebview.api.bench))
+        return Promise.resolve({error: NO_LAB_BRIDGE});
+      return window.pywebview.api.bench(p);
+    }
+    return fetch("/api/bench", {method:"POST",
+                                headers:{"Content-Type":"application/json"},
+                                body: JSON.stringify(p)})
+      .then(function(r){ return r.json(); });
+  }
+
+  function activeKeys(){ return lab.compare ? ["A", "B"] : ["A"]; }
+
+  function runLab(){
+    if(!catalog || !MACHINES.A) return;
+    var mine = ++lab.seq, keys = activeKeys();
+    Promise.all(keys.map(function(k){
+      return askLab(labParams(k))
+        .then(function(d){ return {key: k, d: d}; })
+        .catch(function(err){ return {key: k, d: {error: String(err)}}; });
+    })).then(function(list){
+      if(mine !== lab.seq) return;      // a newer request already answered
+      var snapped = false;
+      list.forEach(function(item){
+        if(!item.d || item.d.error){
+          lab.asmError[item.key] = (item.d && item.d.error) || "알 수 없는 오류";
+          lab.asm[item.key] = null;
+        } else {
+          lab.asmError[item.key] = null;
+          lab.asm[item.key] = item.d;
+          if(item.key === lab.active && fillDimmSelects(item.d)) snapped = true;
+        }
+      });
+      if(!lab.compare){ lab.asm.B = null; lab.asmError.B = null; }
+      markBenchStale();
+      renderLab();
+      // The dropdown snapped to a value this board can take. Ask once more with
+      // the corrected build; the second answer cannot snap again, so this ends.
+      if(snapped) runLab();
+    });
+  }
+
+  // ---- bench request ----
+  function showProfileGroup(){
+    var kind = labVal("lab-profile");
+    ["replay", "ramp", "spike", "soak"].forEach(function(k){
+      byId("pg-" + k).hidden = (k !== kind);
+    });
+  }
+  function benchRequest(key){
+    var p = labParams(key), kind = labVal("lab-profile"), profile = {};
+    if(kind === "replay"){
+      profile.date = labVal("bp-date") || "2026-06-01";
+      profile.count = labNum("bp-count", 0);
+      profile.storm_size = labNum("bp-storm-size", 40);
+      profile.storms_per_day = labNum("bp-storms", 2);
+    } else if(kind === "spike"){
+      profile.base_rate = labNum("bp-base-rate", 165);
+      profile.peak_rate = labNum("bp-peak-rate", 800);
+      profile.spike_at_h = labNum("bp-spike-at", 12);
+      profile.spike_minutes = labNum("bp-spike-min", 30);
+    } else if(kind === "soak"){
+      profile.rate = labNum("bp-rate", 300);
+      profile.hours = labNum("bp-soak-hours", 72);
+    } else {
+      profile.start_rate = labNum("bp-start-rate", 100);
+      profile.end_rate = labNum("bp-end-rate", 2000);
+      profile.hours = labNum("bp-hours", 24);
+    }
+    p.kind = kind; p.profile = profile; p.frames = 600;
+    return p;
+  }
+  function benchSig(){
+    return JSON.stringify(activeKeys().map(benchRequest));
+  }
+  function markBenchStale(){
+    if(lab.benchKey && lab.benchKey !== benchSig()) lab.benchStale = true;
+  }
+
+  function runBench(){
+    if(lab.benchBusy) return;
+    var keys = activeKeys();
+    // An error-level finding means this is not a machine anybody can order, so
+    // numbers about its behaviour would be fiction. The server refuses too.
+    if(!keys.every(function(k){ return lab.asm[k] && lab.asm[k].ok; })) return;
+    var sig = benchSig(), mine = ++lab.benchSeq;
+    lab.benchBusy = true; lab.benchError = null;
+    renderLab();
+    Promise.all(keys.map(function(k){
+      return askBench(benchRequest(k))
+        .then(function(d){ return {key: k, d: d}; })
+        .catch(function(err){ return {key: k, d: {error: String(err)}}; });
+    })).then(function(list){
+      if(mine !== lab.benchSeq) return;
+      lab.benchBusy = false;
+      lab.bench = {A: null, B: null};
+      list.forEach(function(item){
+        if(!item.d || item.d.error) lab.benchError = (item.d && item.d.error) || "알 수 없는 오류";
+        else if(item.d.blocked) lab.benchError = item.d.blocked;
+        else lab.bench[item.key] = item.d;
+      });
+      if(lab.bench.A){ lab.benchKey = sig; lab.benchStale = false; }
+      renderLab();
+    });
+  }
+
+  // ---- assembly rendering ----
+  var LEVEL_WORD = {error: "오류", warn: "경고", info: "참고"};
+
+  function findingList(items){
+    var ul = el("ul", "find");
+    items.forEach(function(f){
+      var li = el("li", "f-" + f.level);
+      // The word as well as the colour: a red bar alone is not a judgement
+      // anybody can read out loud, and it is invisible to a colour-blind eye.
+      li.appendChild(el("span", "lv", LEVEL_WORD[f.level] || f.level));
+      li.appendChild(document.createTextNode(f.message));
+      if(f.remedy) li.appendChild(el("span", "fix", "고치는 법 · " + f.remedy));
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+
+  function channelStrip(c){
+    var box = el("div", "chan");
+    box.setAttribute("role", "img");
+    box.setAttribute("aria-label",
+      "메모리 채널 " + c.total + "개 중 " + c.populated + "개 장착");
+    var total = Math.max(0, Math.min(64, num(c.total)));
+    for(var i = 0; i < total; i++) box.appendChild(el("i", i < c.populated ? "on" : ""));
+    return box;
+  }
+
+  function lossy(now, full, unit, lossPct){
+    var span = el("span");
+    span.appendChild(document.createTextNode(num(now).toLocaleString() + unit));
+    if(lossPct !== null && lossPct !== undefined && lossPct >= 0.5){
+      span.appendChild(el("span", "was", " (전 채널 " + num(full).toLocaleString() + unit + " "));
+      span.appendChild(el("span", "loss", "−" + lossPct + "%"));
+      span.appendChild(el("span", "was", ")"));
+    }
+    return span;
+  }
+
+  function assemblyCard(key, d){
+    var card = el("div", "card asm" + (key === lab.active ? " editing" : ""));
+    card.appendChild(el("div", "label",
+      "머신 " + key + (key === lab.active ? " · 편집 중" : "")));
+    card.appendChild(el("p", "headline", d.headline));
+    card.appendChild(channelStrip(d.channels));
+    card.appendChild(el("p", "hint",
+      d.channels.populated + "/" + d.channels.total + " 채널 장착 · " +
+      d.bandwidth.gbs + " GB/s · " + d.memory.label +
+      (d.channels.dimms_per_channel > 1
+        ? " · " + d.channels.dimms_per_channel + " DPC" : "")));
+
+    var dl = el("dl");
+    function row(name, value){
+      dl.appendChild(el("dt", "", name));
+      var dd = el("dd");
+      if(typeof value === "string") dd.textContent = value;
+      else dd.appendChild(value);
+      dl.appendChild(dd);
+    }
+    var cpu = d.cpu;
+    row("CPU", cpu.label + " · " + cpu.cores + "코어/" + cpu.threads + "스레드 @ " +
+               cpu.ghz + "GHz · " + String(cpu.isa).toUpperCase());
+    row("DIMM", d.machine.dimm_count + " × " + d.machine.dimm_gb + "GB = " +
+                d.ram.total_gb + " GB");
+    row("대역폭", lossy(d.bandwidth.gbs, d.bandwidth.full_gbs, " GB/s",
+                      d.bandwidth.loss_pct));
+    row("prefill", num(d.throughput.prefill_tps).toLocaleString() + " tok/s");
+    row("decode", lossy(d.throughput.decode_tps_single, d.throughput.decode_tps_full,
+                       " tok/s", d.throughput.decode_loss_pct));
+    row("모델", d.model.name + " · " + d.model.quant + " · " + d.model.slots + " 슬롯 · " +
+                "오차 ±" + d.throughput.uncertainty_pct + "%");
+    row("모델 RAM", d.ram.used_gb + " / " + d.ram.total_gb + " GB" +
+                    (d.ram.pct === null ? "" : " (" + d.ram.pct + "%)"));
+    card.appendChild(dl);
+
+    if(d.findings.length) card.appendChild(findingList(d.findings));
+    else card.appendChild(el("p", "hint-row",
+      "지적 사항 없음 — 채널이 모두 차 있고 용량도 맞는다."));
+    return card;
+  }
+
+  // ---- bench rendering ----
+  var BENCH_METRICS = [
+    ["cpu_pct", "CPU", "%"], ["queued", "대기 큐", "건"],
+    ["bw_pct", "대역폭", "%"], ["ram_gb", "RAM", "GB"],
+    ["p95_so_far_s", "p95", "초"], ["offered_rate", "부하율", "건/일"]
+  ];
+  function metricLabel(key){
+    var hit = BENCH_METRICS.filter(function(m){ return m[0] === key; })[0];
+    return hit ? hit[1] : key;
+  }
+  function metricUnit(key){
+    var hit = BENCH_METRICS.filter(function(m){ return m[0] === key; })[0];
+    return hit ? hit[2] : "";
+  }
+
+  var STAT_ROWS = [
+    ["received", "도착", "건"], ["delivered", "전달", "건"], ["dropped", "드롭", "건"],
+    ["p50_s", "p50", "초"], ["p95_s", "p95", "초"], ["p99_s", "p99", "초"],
+    ["max_s", "최대 지연", "초"], ["max_queue", "최대 큐", "건"],
+    ["storm_drain_s", "스톰 소진", "초"], ["tokens_generated", "생성 토큰", "tok"]
+  ];
+
+  function statsGrid(d){
+    var box = el("div", "stats"), s = d.stats || {};
+    STAT_ROWS.forEach(function(row){
+      if(s[row[0]] === undefined || s[row[0]] === null) return;
+      var cell = el("div", "stat");
+      cell.appendChild(el("div", "s-name", row[1]));
+      var v = s[row[0]];
+      // Counts keep their thousands separator; seconds are quoted to two
+      // decimals, because the third one is well inside the model's error bar.
+      var text = typeof v !== "number" ? String(v)
+        : (v % 1 === 0 ? v.toLocaleString() : v.toFixed(2));
+      cell.appendChild(el("div", "s-val", text + (row[2] ? " " + row[2] : "")));
+      box.appendChild(cell);
+    });
+    if(s.slot_utilisation !== undefined && s.slot_utilisation !== null){
+      var u = el("div", "stat");
+      u.appendChild(el("div", "s-name", "슬롯 점유"));
+      u.appendChild(el("div", "s-val", Math.round(num(s.slot_utilisation) * 100) + " %"));
+      box.appendChild(u);
+    }
+    var verdict = el("div", "stat");
+    verdict.appendChild(el("div", "s-name", "SLA"));
+    verdict.appendChild(el("div", "s-val " + (d.breach ? "v-fail" : "v-pass"),
+      d.breach ? "미달" : "통과"));
+    box.appendChild(verdict);
+    return box;
+  }
+
+  function breachLine(d){
+    var b = d.breach;
+    var box = el("div", "breach" + (b ? "" : " clear"));
+    if(!b){
+      box.appendChild(el("strong", "", "끝까지 SLA를 지켰다"));
+      box.appendChild(el("span", "",
+        "이 프로파일이 덮는 구간 내내 p95가 " + d.sla.sla_seconds + "초를 넘지 않았다."));
+      box.appendChild(el("span", "why",
+        "무너지는 지점을 보려면 램프의 끝 부하를 올리거나 더 큰 모델로 다시 돌려라."));
+      return box;
+    }
+    box.appendChild(el("strong", "", "무너지는 지점"));
+    box.appendChild(el("span", "",
+      fmtClock(b.t_s) + " · 부하 " + Math.round(num(b.offered_rate)).toLocaleString() +
+      "건/일 · p95 " + num(b.p95_s).toFixed(1) + "초 (목표 " + d.sla.sla_seconds + "초)"));
+    box.appendChild(el("span", "why",
+      "여기서 처음으로 지연 SLA를 넘겼다. 아래 차트의 세로선이 그 시각이다."));
+    return box;
+  }
+
+  // Whole run at a glance: one line per machine, the SLA where it applies, and
+  // a vertical mark at each breach. The playhead is a separate element on
+  // purpose -- moving one attribute per frame is far cheaper than rebuilding
+  // 600 points sixty times a second.
+  function benchChart(runs, metric, span){
+    var W = 640, H = 200, L = 46, R = 12, T = 12, B = 24;
+    var iw = W - L - R, ih = H - T - B;
+    var cols = runs.map(function(r){
+      return {key: r.key, run: r.d,
+              values: r.d.frames.map(function(f){ return num(f[metric]); })};
+    });
+    var max = 1;
+    cols.forEach(function(c){
+      c.values.forEach(function(v){ if(v > max) max = v; });
+    });
+    if(metric === "cpu_pct" || metric === "bw_pct") max = Math.max(max, 100);
+    var sla = runs[0].d.sla ? num(runs[0].d.sla.sla_seconds) : 0;
+    if(metric === "p95_so_far_s" && sla) max = Math.max(max, sla * 1.2);
+
+    var svg = svgEl("svg", {viewBox: "0 0 " + W + " " + H,
+      preserveAspectRatio: "none", role: "img",
+      "aria-label": metricLabel(metric) + " 전체 구간 추이"});
+    var i, y;
+    for(i = 0; i <= 4; i++){
+      y = T + (ih / 4) * i;
+      svg.appendChild(svgEl("line", {x1: L, y1: y.toFixed(1), x2: (W - R),
+        y2: y.toFixed(1), stroke: "var(--border)", "stroke-width": "1"}));
+      var lbl = svgEl("text", {x: (L - 6), y: (y + 3.5).toFixed(1), class: "axis",
+                               "text-anchor": "end"});
+      lbl.textContent = fmtNum(max * (1 - i / 4));
+      svg.appendChild(lbl);
+    }
+    var g = svgEl("g", {transform: "translate(" + L + "," + T + ")"});
+    var TONE = {A: "var(--accent)", B: "var(--warning)"};
+    cols.forEach(function(c){
+      var attrs = {d: linePath(c.values, max, iw, ih), fill: "none",
+                   stroke: TONE[c.key] || "var(--accent)", "stroke-width": "1.5"};
+      if(c.key === "B") attrs["stroke-dasharray"] = "5 3";
+      g.appendChild(svgEl("path", attrs));
+    });
+    if(metric === "p95_so_far_s" && sla){
+      g.appendChild(svgEl("path", {d: flatLine(sla, max, iw, ih), fill: "none",
+        stroke: "var(--warning)", "stroke-width": "1.5", "stroke-dasharray": "5 4"}));
+    }
+    cols.forEach(function(c){
+      var b = c.run.breach;
+      if(!b) return;
+      var x = Math.max(0, Math.min(1, num(b.t_s) / span)) * iw;
+      g.appendChild(svgEl("line", {x1: x.toFixed(1), y1: 0, x2: x.toFixed(1),
+        y2: ih.toFixed(1), stroke: "var(--error)", "stroke-width": "1.5",
+        "stroke-dasharray": "4 3"}));
+      var tag = svgEl("text", {x: (x + 4).toFixed(1), y: 10, class: "axis"});
+      tag.textContent = c.key + " 붕괴 " + fmtClock(b.t_s);
+      g.appendChild(tag);
+    });
+    var head = svgEl("line", {x1: 0, y1: 0, x2: 0, y2: ih.toFixed(1),
+      stroke: "var(--text-primary)", "stroke-width": "1.5", opacity: "0.75"});
+    g.appendChild(head);
+    svg.appendChild(g);
+
+    var legend = [{token: "accent", name: "머신 A"}];
+    if(cols.length > 1) legend.push({token: "warning", name: "머신 B", kind: "dash"});
+    if(metric === "p95_so_far_s" && sla)
+      legend.push({token: "warning", name: "지연 SLA", kind: "dash"});
+    if(cols.some(function(c){ return c.run.breach; }))
+      legend.push({token: "error", name: "SLA 붕괴 지점", kind: "tick"});
+
+    return {svg: svg, head: head, legend: legend,
+            toX: function(t){ return Math.max(0, Math.min(1, t / span)) * iw; }};
+  }
+
+  // Column names are translated where the engine's field is known and passed
+  // through where it is not: the row shape belongs to the bench, so a field it
+  // adds later must show up as an extra column rather than disappear.
+  var WORST_NAME = {
+    alarm_id: "알람", severity: "심각도", storm_id: "스톰",
+    arrived_s: "도착", queue_wait_s: "대기", ttft_s: "첫 토큰",
+    generate_s: "생성", deliver_s: "전송", total_s: "합계", slot: "슬롯"
+  };
+
+  function worstTable(rows){
+    var keys = Object.keys(rows[0]).slice(0, 12);
+    var box = el("div", "scroll"), tbl = el("table");
+    var thead = el("thead"), htr = el("tr");
+    keys.forEach(function(k){
+      htr.appendChild(el("th", typeof rows[0][k] === "number" ? "num" : "",
+                         WORST_NAME[k] || k));
+    });
+    thead.appendChild(htr); tbl.appendChild(thead);
+    var tbody = el("tbody");
+    rows.forEach(function(r){
+      var tr = el("tr");
+      keys.forEach(function(k){
+        var v = r[k];
+        if(v === null || v === undefined){ tr.appendChild(el("td", "", "-")); return; }
+        if(typeof v !== "number"){ tr.appendChild(el("td", "", String(v))); return; }
+        // Arrival is a clock reading in a run that can span days; the rest are
+        // durations, and two decimals is as fine as any of them are known.
+        tr.appendChild(el("td", "num",
+          k === "arrived_s" ? fmtClock(v)
+            : /_s$/.test(k) ? v.toFixed(2) + "s"
+            : String(Math.round(v * 100) / 100)));
+      });
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody); box.appendChild(tbl);
+    return box;
+  }
+
+  // The player. The server finished the whole run in milliseconds, so nothing
+  // is streaming and nothing is polled -- the browser is what makes time pass
+  // here, which is why 600x and a scrub bar are possible at all.
+  function playbackPanel(runs){
+    var primary = runs[0].d, frames = primary.frames;
+    var span = num(primary.profile && primary.profile.span_s) ||
+               num(frames.length ? frames[frames.length - 1].t_s : 0) || 1;
+    var box = el("div");
+
+    var maxQueue = 1, installed = Math.max(1, num(primary.machine.ram.total_gb));
+    var deliveredTo = [], acc = 0;
+    frames.forEach(function(f){
+      if(f.queued > maxQueue) maxQueue = f.queued;
+      acc += num(f.delivered); deliveredTo.push(acc);
+    });
+    var total = num(primary.profile && primary.profile.total_alarms) || acc;
+
+    // Four resources, four different columns of the frame. Nothing here is
+    // another gauge's number rescaled -- that reuse is what made the old
+    // resource graphs one series wearing three labels.
+    var GAUGES = [
+      {name: "CPU 가동", cls: "",
+       pct: function(f){ return num(f.cpu_pct); },
+       val: function(f){ return Math.round(num(f.cpu_pct)) + "%"; },
+       sub: function(f){ return "동시 " + f.active + " / " + primary.sla.slots + " 슬롯"; }},
+      {name: "대기 큐", cls: "g-queue",
+       pct: function(f){ return 100 * num(f.queued) / maxQueue; },
+       val: function(f){ return num(f.queued).toLocaleString() + "건"; },
+       sub: function(){ return "구간 최대 " + maxQueue.toLocaleString() + "건"; }},
+      {name: "메모리 대역폭", cls: "g-bw",
+       pct: function(f){ return num(f.bw_pct); },
+       val: function(f){ return num(f.bw_gbs).toFixed(1) + " GB/s"; },
+       sub: function(f){ return Math.round(num(f.bw_pct)) + "% · 연산 " +
+                                Math.round(num(f.compute_pct)) + "%"; }},
+      {name: "RAM 실사용", cls: "g-ram",
+       pct: function(f){ return 100 * num(f.ram_gb) / installed; },
+       val: function(f){ return num(f.ram_gb).toFixed(1) + " GB"; },
+       sub: function(f){ return "장착 " + installed + " GB · KV " +
+                                num(f.kv_gb).toFixed(2) + " GB"; }}
+    ];
+    var gauges = el("div", "gauges");
+    var widgets = GAUGES.map(function(gd){
+      var cell = el("div", "gauge");
+      cell.setAttribute("role", "img");
+      cell.appendChild(el("div", "g-name", gd.name));
+      var value = el("div", "g-val", "-");
+      var bar = el("div", "bar " + gd.cls), fill = el("span");
+      bar.appendChild(fill);
+      var sub = el("div", "g-sub", "");
+      cell.appendChild(value); cell.appendChild(bar); cell.appendChild(sub);
+      gauges.appendChild(cell);
+      return {d: gd, cell: cell, value: value, bar: bar, fill: fill, sub: sub};
+    });
+    box.appendChild(gauges);
+
+    var controls = el("div", "transport");
+    var playBtn = el("button", "", "▶ 재생");
+    playBtn.type = "button";
+    playBtn.setAttribute("aria-pressed", "false");
+    controls.appendChild(playBtn);
+    var speeds = el("div", "speeds");
+    controls.appendChild(speeds);
+    controls.appendChild(el("span", "spacer"));
+    var clock = el("div", "clock", "00:00");
+    controls.appendChild(clock);
+    var counter = el("span", "hint", "");
+    controls.appendChild(counter);
+    box.appendChild(controls);
+
+    var progress = el("div", "progress"), progressFill = el("span");
+    progress.appendChild(progressFill);
+    progress.setAttribute("role", "img");
+    box.appendChild(progress);
+
+    var scrub = el("div", "scrub");
+    scrub.appendChild(el("span", "hint", "재생 위치"));
+    var range = document.createElement("input");
+    range.type = "range"; range.min = "0"; range.max = "1000"; range.step = "1";
+    range.value = "0";
+    range.setAttribute("aria-label", "재생 위치");
+    scrub.appendChild(range);
+    box.appendChild(scrub);
+
+    var picker = el("div", "bench-metrics");
+    BENCH_METRICS.forEach(function(m){
+      var b = el("button", "", m[1]);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(m[0] === lab.metric));
+      b.addEventListener("click", function(){
+        lab.metric = m[0];
+        Array.prototype.forEach.call(picker.children, function(x, i){
+          x.setAttribute("aria-pressed", String(BENCH_METRICS[i][0] === lab.metric));
+        });
+        drawChart();
+        paint(state.t, false);
+      });
+      picker.appendChild(b);
+    });
+    box.appendChild(picker);
+
+    var chartHost = el("div", "graph bench-chart");
+    chartHost.style.marginTop = "12px";
+    box.appendChild(chartHost);
+    var chart = null;
+    function drawChart(){
+      chartHost.textContent = "";
+      var head = el("div", "graph-head");
+      head.appendChild(el("span", "g-title",
+        metricLabel(lab.metric) + " · 전체 구간"));
+      head.appendChild(el("span", "spacer"));
+      head.appendChild(el("span", "g-scale",
+        fmtClock(span) + " · " + frames.length + "프레임 · " + metricUnit(lab.metric)));
+      chartHost.appendChild(head);
+      chart = benchChart(runs, lab.metric, span);
+      chartHost.appendChild(chart.svg);
+      chartHost.appendChild(chartLegend(chart.legend));
+    }
+    drawChart();
+
+    function indexAt(t){
+      if(!frames.length) return 0;
+      var i = Math.round((t / span) * (frames.length - 1));
+      return Math.max(0, Math.min(frames.length - 1, i));
+    }
+    function paint(t, moveScrub){
+      var i = indexAt(t), f = frames[i];
+      if(!f) return;
+      widgets.forEach(function(w){
+        var pct = Math.max(0, Math.min(100, w.d.pct(f)));
+        w.fill.style.width = pct + "%";
+        if(pct >= 90) w.bar.classList.add("hot"); else w.bar.classList.remove("hot");
+        w.value.textContent = w.d.val(f);
+        w.sub.textContent = w.d.sub(f);
+        w.cell.setAttribute("aria-label",
+          w.d.name + " " + w.d.val(f) + " · " + w.d.sub(f));
+      });
+      clock.textContent = fmtClock(t);
+      counter.textContent = "전달 " + deliveredTo[i].toLocaleString() + " / " +
+        total.toLocaleString() + "건 · p95 " + num(f.p95_so_far_s).toFixed(1) +
+        "초 · 부하 " + Math.round(num(f.offered_rate)).toLocaleString() + "건/일";
+      var frac = Math.max(0, Math.min(1, t / span));
+      progressFill.style.width = (100 * frac) + "%";
+      progress.setAttribute("aria-label",
+        "재생 진행 " + Math.round(frac * 100) + "%");
+      if(moveScrub) range.value = String(Math.round(1000 * frac));
+      if(chart){
+        var x = chart.toX(t).toFixed(1);
+        chart.head.setAttribute("x1", x);
+        chart.head.setAttribute("x2", x);
+      }
+    }
+
+    var state = {t: 0, speed: 60, playing: false, raf: 0, last: 0};
+    bench = state;
+    function stop(){
+      if(state.raf) cancelAnimationFrame(state.raf);
+      state.raf = 0; state.playing = false;
+      playBtn.textContent = "▶ 재생";
+      playBtn.setAttribute("aria-pressed", "false");
+    }
+    function step(now){
+      var dt = (now - state.last) / 1000;
+      state.last = now;
+      state.t += dt * state.speed;
+      if(state.t >= span){ state.t = span; paint(state.t, true); stop(); return; }
+      paint(state.t, true);
+      state.raf = requestAnimationFrame(step);
+    }
+    playBtn.addEventListener("click", function(){
+      if(state.playing){ stop(); return; }
+      if(state.t >= span) state.t = 0;
+      state.playing = true;
+      playBtn.textContent = "■ 일시정지";
+      playBtn.setAttribute("aria-pressed", "true");
+      state.last = performance.now();
+      state.raf = requestAnimationFrame(step);
+    });
+
+    var SPEEDS = [[1, "1×"], [60, "60×"], [600, "600×"], [0, "즉시"]];
+    SPEEDS.forEach(function(pair){
+      var b = el("button", "", pair[1]);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(pair[0] === state.speed));
+      b.addEventListener("click", function(){
+        if(pair[0] === 0){ stop(); state.t = span; paint(state.t, true); }
+        else { state.speed = pair[0]; }
+        Array.prototype.forEach.call(speeds.children, function(x, i){
+          x.setAttribute("aria-pressed",
+            String(SPEEDS[i][0] !== 0 && SPEEDS[i][0] === state.speed));
+        });
+      });
+      speeds.appendChild(b);
+    });
+
+    range.addEventListener("input", function(){
+      // Scrubbing is a deliberate jump, so it takes over from playback rather
+      // than fighting it for the playhead.
+      stop();
+      state.t = span * (Number(range.value) / 1000);
+      paint(state.t, false);
+    });
+
+    if(STILL){
+      // Reduced motion: no self-driving playhead. The final state is shown at
+      // once and the scrub bar is still there for anyone who wants a moment.
+      controls.hidden = true;
+      state.t = span;
+      paint(state.t, true);
+      box.appendChild(el("p", "hint-row",
+        "동작 최소화 설정이 켜져 있어 재생 애니메이션 없이 마지막 상태를 보여준다. " +
+        "슬라이더로 원하는 시점을 직접 볼 수 있다."));
+    } else {
+      paint(0, true);
+    }
+    return box;
+  }
+
+  function benchPanel(){
+    var card = el("div", "card");
+    card.appendChild(el("div", "label", "부하 테스트"));
+    card.appendChild(el("p", "prose",
+      "가상시간으로 즉시 완주시킨 뒤 프레임으로 접어 보낸다. 실제 모델이나 벤치마크를 " +
+      "돌리지 않는다 — 재생은 브라우저가 하므로 배속을 올리거나 스톰 순간으로 바로 " +
+      "건너뛸 수 있다. 조립과 달리 이 계산은 버튼으로만 돈다."));
+
+    if(lab.benchBusy){
+      card.appendChild(el("p", "hint-row", "부하를 만들고 큐를 돌리는 중…"));
+      return card;
+    }
+    if(lab.benchError){
+      card.appendChild(el("div", "note", "부하 테스트 실패: " + lab.benchError));
+    }
+    var runs = activeKeys()
+      .map(function(k){ return {key: k, d: lab.bench[k]}; })
+      .filter(function(r){ return r.d && r.d.frames && r.d.frames.length; });
+    if(!runs.length){
+      card.appendChild(el("p", "hint-row",
+        "왼쪽에서 프로파일을 고르고 실행하면 여기에 재생 가능한 결과가 나온다."));
+      return card;
+    }
+    if(lab.benchStale){
+      card.appendChild(el("div", "note",
+        "입력이 바뀌었다. 아래 결과는 지금 조립과 맞지 않으므로 다시 실행해야 한다."));
+    }
+    var primary = runs[0].d;
+    card.appendChild(el("p", "cpu", primary.profile.label));
+    card.appendChild(el("p", "hint",
+      "총 " + num(primary.profile.total_alarms).toLocaleString() + "건 · " +
+      fmtClock(primary.profile.span_s) + " 구간 · " + primary.frames.length + "프레임 · 시드 " +
+      primary.seed));
+    card.appendChild(breachLine(primary));
+    card.appendChild(statsGrid(primary));
+    card.appendChild(playbackPanel(runs));
+
+    if(runs.length > 1){
+      var b = runs[1].d;
+      card.appendChild(el("p", "hint-row",
+        "머신 B: " + b.machine.headline + " · p95 " +
+        (b.stats ? num(b.stats.p95_s).toFixed(1) : "-") + "초 · " +
+        (b.breach ? fmtClock(b.breach.t_s) + "에 붕괴" : "끝까지 통과")));
+    }
+    if(primary.worst && primary.worst.length){
+      card.appendChild(el("p", "hint-row", "가장 오래 걸린 " +
+        primary.worst.length + "건"));
+      card.appendChild(worstTable(primary.worst));
+    }
+    var notes = (primary.profile.notes || []).concat(primary.notes || []);
+    if(notes.length){
+      var ul = el("ul", "notes");
+      notes.forEach(function(n){ ul.appendChild(el("li", "", n)); });
+      card.appendChild(ul);
+    }
+    return card;
+  }
+
+  function stopBenchPlayback(){
+    if(bench){
+      if(bench.raf) cancelAnimationFrame(bench.raf);
+      bench = null;
+    }
+  }
+
+  function renderLab(){
+    var host = byId("lab-results");
+    if(!host) return;
+    stopBenchPlayback();
+    host.textContent = "";
+
+    var keys = activeKeys();
+    var pair = el("div", "asm-pair");
+    keys.forEach(function(k){
+      if(lab.asmError[k]){
+        var bad = el("div", "card");
+        bad.appendChild(el("div", "label", "머신 " + k));
+        bad.appendChild(el("div", "note", "조립 실패: " + lab.asmError[k]));
+        pair.appendChild(bad);
+      } else if(lab.asm[k]){
+        pair.appendChild(assemblyCard(k, lab.asm[k]));
+      }
+    });
+    host.appendChild(section("가상 서버 조립",
+      "값을 바꾸면 즉시 다시 계산한다", pair));
+    host.appendChild(section("부하 테스트",
+      lab.asm.A ? lab.asm.A.cpu.label : "", benchPanel()));
+
+    var ready = keys.every(function(k){ return lab.asm[k] && lab.asm[k].ok; });
+    var runBtn = byId("lab-run");
+    runBtn.disabled = lab.benchBusy || !ready;
+    runBtn.textContent = lab.benchBusy ? "실행 중…"
+      : (lab.bench.A ? "▶ 다시 실행" : "▶ 부하 테스트 실행");
+    byId("lab-run-hint").textContent = !ready
+      ? "구성에 오류가 있다 — 위의 오류를 고쳐야 실행할 수 있다."
+      : "가상시간으로 즉시 완주한 뒤, 재생은 브라우저가 한다.";
+    var active = lab.asm[lab.active];
+    byId("lab-build-hint").textContent = active
+      ? active.channels.populated + "/" + active.channels.total + " 채널 · " +
+        active.ram.total_gb + " GB · " + active.bandwidth.gbs + " GB/s"
+      : "";
+  }
+
+  // ---- lab wiring ----
+  function setActiveMachine(key){
+    lab.active = key;
+    ["A", "B"].forEach(function(k){
+      byId("mach-" + k.toLowerCase()).setAttribute("aria-pressed", String(k === key));
+    });
+    writeMachine();
+    runLab();
+  }
+
+  function onLabInput(ev){
+    var id = (ev && ev.target && ev.target.id) || "";
+    if(id === "lab-compare"){
+      lab.compare = byId("lab-compare").checked;
+      byId("mach-b").disabled = !lab.compare;
+      if(!lab.compare && lab.active === "B"){ setActiveMachine("A"); return; }
+    }
+    if(id === "lab-profile") showProfileGroup();
+    if(id === "lab-cpu") fillSockets();
+    readMachine();
+    markBenchStale();
+    // Profile knobs change the load, not the board, so they must not pay for a
+    // reassembly round trip.
+    if(id.indexOf("bp-") === 0 || id === "lab-profile"){ renderLab(); return; }
+    runLab();
+  }
+
+  function setView(which){
+    var isLab = which === "lab";
+    byId("size").hidden = isLab;
+    byId("lab").hidden = !isLab;
+    byId("view-size").setAttribute("aria-pressed", String(!isLab));
+    byId("view-lab").setAttribute("aria-pressed", String(isLab));
+    if(isLab){
+      stopPlayback();          // the token stream belongs to the other screen
+      if(!lab.asm.A && !lab.asmError.A) runLab();
+    } else {
+      stopBenchPlayback();
+    }
+  }
+
+  function initLab(){
+    fillSelect(byId("lab-cpu"), (catalog.cpus || []).map(function(c){
+      return [c.id, c.label + " · " + c.cores + "C " + c.mem_channels + "ch " + c.ddr_gen];
+    }));
+    fillSelect(byId("lab-model"), catalog.models.map(function(m){
+      return [m.id, m.name + " (" + m.params_b + "B)"];
+    }));
+    fillSelect(byId("lab-quant"), catalog.quants.map(function(q){
+      return [q.id, q.id + " (" + q.bpw + " bpw)"];
+    }));
+
+    MACHINES.A = defaultMachine();
+    MACHINES.B = defaultMachine();
+    // B opens on the cautionary build: the same capacity as A, on a quarter of
+    // the channels. Same gigabytes, a fraction of the bandwidth -- which is the
+    // one comparison this screen exists to make.
+    MACHINES.B.dimm_gb = MACHINES.A.dimm_gb * 2;
+    MACHINES.B.dimm_count = Math.max(1, Math.round(MACHINES.A.dimm_count / 2));
+
+    showProfileGroup();
+    setActiveMachine("A");
+
+    var railForm = byId("lab-rail");
+    railForm.addEventListener("input", onLabInput);
+    railForm.addEventListener("change", onLabInput);
+    railForm.addEventListener("submit", function(ev){ ev.preventDefault(); });
+    byId("lab-run").addEventListener("click", runBench);
+    byId("mach-a").addEventListener("click", function(){ setActiveMachine("A"); });
+    byId("mach-b").addEventListener("click", function(){
+      if(lab.compare) setActiveMachine("B");
+    });
+    byId("view-size").addEventListener("click", function(){ setView("size"); });
+    byId("view-lab").addEventListener("click", function(){ setView("lab"); });
+  }
+
   // ---- update ------------------------------------------------------
   function checkForUpdate(){
     var btn = document.getElementById("update");
@@ -2556,6 +4204,7 @@ def app_html(mode: str = "server") -> str:
       modelHint(); tokenHint(); run();
     });
     wireDesktopSaves();
+    initLab();
     modelHint(); tokenHint(); run();
     checkForUpdate();
   }).catch(function(err){

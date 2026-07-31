@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, fields
 
 from .memory import GB, RUNTIME_OS_GB
 from .simulate import SimSegment, SimTrace
-from .timeline import Ceilings
+from .timeline import Ceilings, SegmentRates, segment_rates
 from .types import CpuSpec
 
 #: Time constant of the reported load average, in seconds. Linux reports 1/5/15
@@ -115,7 +115,7 @@ def sample_host(
 
     acc = [_Accumulator() for _ in range(count)]
     for seg in trace.segments:
-        rates = _rates(seg, ceilings)
+        rates = segment_rates(seg, ceilings)
         for index, slice_s in _spread(seg.t_s, seg.span_s, period_s, count):
             acc[index].add(seg, rates, slice_s)
 
@@ -222,45 +222,6 @@ def to_csv(host: HostTrace) -> str:
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _Rates:
-    bandwidth_bytes_s: float
-    prefill_tps: float
-    decode_tps: float
-
-
-def _rates(seg: SimSegment, c: Ceilings) -> _Rates:
-    """Instantaneous draw during one constant-rate segment.
-
-    Deliberately a copy of `timeline._rates`, not an import of it: that function
-    is private and returns fields this module has no use for. The formulas below
-    must stay identical to it -- two modules describing the same run may not
-    disagree about how many bytes it moved.
-
-        decode   one sweep of the weight set per batched token round, plus each
-                 request re-reading its own KV. `decoding` slots generating
-                 together get one token each per sweep, which is the whole
-                 reason continuous batching helps a bandwidth-bound box.
-        prefill  the weights stream once per micro-batch, not once per token.
-    """
-    if seg.span_s <= 0:
-        return _Rates(0.0, 0.0, 0.0)
-
-    prefill_tps = seg.prefill_tokens / seg.span_s
-    decode_tps = seg.decode_tokens / seg.span_s
-
-    mean_ctx = seg.kv_tokens / seg.active if seg.active else 0.0
-    sweeps_s = decode_tps / seg.decoding if seg.decoding else 0.0
-    decode_bytes_s = sweeps_s * c.weight_bytes + decode_tps * c.kv_bytes_token * mean_ctx
-    prefill_bytes_s = (prefill_tps / c.ubatch) * c.weight_bytes if c.ubatch else 0.0
-
-    return _Rates(
-        bandwidth_bytes_s=decode_bytes_s + prefill_bytes_s,
-        prefill_tps=prefill_tps,
-        decode_tps=decode_tps,
-    )
-
-
 class _Accumulator:
     """Time-weighted sums for one sampling interval, plus the peaks inside it."""
 
@@ -279,7 +240,7 @@ class _Accumulator:
         self.max_queued = 0
         self.max_active = 0
 
-    def add(self, seg: SimSegment, r: _Rates, slice_s: float) -> None:
+    def add(self, seg: SimSegment, r: SegmentRates, slice_s: float) -> None:
         self.busy_s += slice_s
         self.bytes += r.bandwidth_bytes_s * slice_s
         self.prefill_tokens += r.prefill_tps * slice_s

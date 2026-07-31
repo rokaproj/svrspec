@@ -4,11 +4,16 @@ The server is started for real on an ephemeral port rather than mocked, because
 the thing worth testing is that a browser can actually get a sizing out of it.
 """
 
+import importlib.util
 import json
+import math
 import re
+import sys
 import threading
+import types
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -856,3 +861,709 @@ def test_desktop_capacity_reports_bad_input_instead_of_raising():
     api = Api(Catalog(DATA))
     assert "error" in api.capacity({**BASE_REQUEST, "cpu": "no-such-cpu"})
     assert "error" in api.capacity([1, 2, 3])
+
+
+# --------------------------------------------------------------------------
+# Virtual lab
+# --------------------------------------------------------------------------
+#
+# `svrspec.lab` and `svrspec.bench` are landed by other owners in the same wave.
+# Everything asserted below is a property of *this* layer -- that the payload
+# carries the finding and its remedy, that it reports the bandwidth the engine
+# computed instead of rounding the loss away, that a bench never runs on the
+# live path, that no infinity reaches the wire. Those are worth holding before
+# the engines arrive and worth re-running against the real physics afterwards,
+# so the fixture prefers the real module and only stands in when there is none.
+#
+# The stand-ins are deliberately thin, and the one number that matters -- the
+# bandwidth an under-populated board actually achieves -- comes from
+# `perf.effective_bandwidth`, which already landed. Nothing here re-derives it.
+
+
+def _stub_lab() -> types.ModuleType:
+    from svrspec.memory import size_memory
+    from svrspec.perf import Efficiency, effective_bandwidth, predict_throughput
+    from svrspec.types import TokenProfile
+
+    @dataclass(frozen=True)
+    class VirtualMachine:
+        name: str
+        cpu_id: str
+        sockets: int
+        dimm_gb: int
+        dimm_count: int
+        model_id: str
+        quant_id: str
+        slots: int
+
+    @dataclass(frozen=True)
+    class Finding:
+        level: str
+        code: str
+        message: str
+        remedy: str = ""
+
+    @dataclass(frozen=True)
+    class Assembly:
+        vm: VirtualMachine
+        cpu: object
+        memory: object
+        model: object
+        quant: object
+        channels_total: int
+        channels_populated: int
+        dimms_per_channel: int
+        ram_total_gb: int
+        ram_used_gb: float
+        bandwidth_gbs: float
+        bandwidth_full_gbs: float
+        prefill_tps: float
+        decode_tps_single: float
+        decode_tps_full: float
+        uncertainty: float
+        findings: list = field(default_factory=list)
+
+        @property
+        def ok(self) -> bool:
+            return not any(f.level == "error" for f in self.findings)
+
+    def _memory_at(cat, cpu, dpc, dimm_gb):
+        usable = [
+            m
+            for m in cat.memory
+            if m.ddr_gen == cpu.ddr_gen
+            and m.dimms_per_channel == dpc
+            and m.rated_mts <= cpu.max_ddr_mts
+        ]
+        exact = [m for m in usable if m.dimm_gb == dimm_gb]
+        pool = exact or usable
+        if not pool:
+            return cat.memory_for(cpu, dpc)
+        return max(pool, key=lambda m: m.effective_mts)
+
+    def assemble(cat, vm, tokens=None):
+        tokens = tokens or TokenProfile()
+        cpu, model, quant = cat.cpu(vm.cpu_id), cat.model(vm.model_id), cat.quant(vm.quant_id)
+        eff = Efficiency.from_catalog(cat.coefficients)
+        sockets = max(1, vm.sockets)
+        channels_total = cpu.mem_channels * sockets
+        count = max(0, vm.dimm_count)
+        dpc = max(1, math.ceil(count / channels_total)) if count else 1
+        memory = _memory_at(cat, cpu, min(dpc, 2), vm.dimm_gb)
+        populated = channels_total if dpc >= 2 else min(count, channels_total)
+        per_socket = populated // sockets
+
+        bw, _ = effective_bandwidth(
+            cpu, memory, eff, sockets, channels_populated=per_socket
+        )
+        bw_full, _ = effective_bandwidth(cpu, memory, eff, sockets)
+        now = predict_throughput(
+            model, quant, cpu, memory, tokens, eff, slots=vm.slots,
+            sockets=sockets, channels_populated=per_socket,
+        )
+        full = predict_throughput(
+            model, quant, cpu, memory, tokens, eff, slots=vm.slots, sockets=sockets
+        )
+        ram = size_memory(model, quant, tokens, slots=vm.slots)
+        total_gb = vm.dimm_gb * count
+
+        findings = []
+        if count < 1:
+            findings.append(Finding("error", "no-dimms", "DIMM이 한 장도 없다.", "메모리를 장착해라."))
+        elif populated < channels_total:
+            loss = round((1 - bw / bw_full) * 100) if bw_full else 0
+            findings.append(Finding(
+                "warn", "channels-underfilled",
+                f"{populated}/{channels_total} 채널만 장착 — 대역폭 "
+                f"{bw_full / 1e9:.0f} → {bw / 1e9:.0f} GB/s ({loss}% 손실)",
+                f"같은 {total_gb}GB를 {channels_total}장으로 나눠 꽂으면 전 채널이 찬다. "
+                f"장당 {total_gb // channels_total}GB가 필요한데 카탈로그에는 없을 수 있다.",
+            ))
+        if count and total_gb < ram.subtotal_gb:
+            findings.append(Finding(
+                "error", "ram-too-small",
+                f"모델이 {ram.subtotal_gb:.1f}GB를 요구하는데 {total_gb}GB만 장착했다.",
+                "DIMM 용량이나 장수를 늘려라.",
+            ))
+        if total_gb > cpu.max_mem_gb * sockets:
+            findings.append(Finding(
+                "error", "ram-exceeds-cpu",
+                f"이 CPU의 최대 장착량은 {cpu.max_mem_gb * sockets}GB다.",
+                "장수를 줄여라.",
+            ))
+        if vm.sockets > cpu.sockets_max:
+            findings.append(Finding(
+                "error", "sockets-exceeded",
+                f"이 부품은 최대 {cpu.sockets_max}소켓이다.", "소켓 수를 줄여라."
+            ))
+        if memory.effective_mts < memory.rated_mts:
+            findings.append(Finding(
+                "warn", "dpc-derate",
+                f"2 DPC로 {memory.rated_mts} → {memory.effective_mts} MT/s로 떨어진다.",
+                "채널당 1장으로 구성해라.",
+            ))
+
+        return Assembly(
+            vm=vm, cpu=cpu, memory=memory, model=model, quant=quant,
+            channels_total=channels_total, channels_populated=populated,
+            dimms_per_channel=dpc, ram_total_gb=total_gb,
+            ram_used_gb=ram.subtotal_gb,
+            bandwidth_gbs=bw / 1e9, bandwidth_full_gbs=bw_full / 1e9,
+            prefill_tps=now.prefill_tps, decode_tps_single=now.decode_tps_single,
+            decode_tps_full=full.decode_tps_single, uncertainty=now.uncertainty,
+            findings=findings,
+        )
+
+    def dimm_options(cat, cpu, sockets):
+        total = cpu.mem_channels * sockets
+        caps = sorted({m.dimm_gb for m in cat.memory if m.ddr_gen == cpu.ddr_gen})
+        out = []
+        for gb in caps:
+            for count in range(1, total * 2 + 1):
+                if gb * count > cpu.max_mem_gb * sockets:
+                    continue
+                dpc = math.ceil(count / total)
+                out.append({
+                    "dimm_gb": gb, "count": count, "ram_total": gb * count,
+                    "channels_populated": total if dpc >= 2 else min(count, total),
+                    "dpc": dpc,
+                })
+        return out
+
+    def to_service(cat, asm, workload):  # pragma: no cover - unused by the GUI
+        raise NotImplementedError
+
+    mod = types.ModuleType("svrspec.lab")
+    mod.VirtualMachine = VirtualMachine
+    mod.Finding = Finding
+    mod.Assembly = Assembly
+    mod.assemble = assemble
+    mod.dimm_options = dimm_options
+    mod.to_service = to_service
+    return mod
+
+
+def _stub_loadgen() -> types.ModuleType:
+    @dataclass(frozen=True)
+    class LoadProfile:
+        kind: str
+        label: str
+        span_s: float
+        total_alarms: int
+        params: dict
+        notes: list
+
+    @dataclass(frozen=True)
+    class _Alarm:
+        id: str
+        at_s: float
+
+    def build_load(kind, *, seed=20260730, **params):
+        hours = params.get("hours", 24)
+        span = float(hours) * 3600.0
+        if kind == "ramp":
+            lo, hi = params.get("start_rate", 100), params.get("end_rate", 2000)
+            label = f"램프 {lo:,} → {hi:,}건/일"
+        elif kind == "spike":
+            span = 24 * 3600.0
+            lo = hi = params.get("base_rate", 165)
+            label = f"스파이크 {lo:,} → {params.get('peak_rate', 800):,}건/일"
+        elif kind == "soak":
+            lo = hi = params.get("rate", 300)
+            label = f"소크 {lo:,}건/일 × {hours}시간"
+        else:
+            span = 24 * 3600.0
+            lo = hi = params.get("count") or 359
+            label = "실측 하루 재생"
+        # Arrivals whose density follows the profile's rate, which is all the
+        # frame folding downstream actually reads off them.
+        total = max(1, int(round((lo + hi) / 2 * span / 86400.0)))
+        alarms = []
+        for i in range(total):
+            share = (i + 0.5) / total
+            if hi != lo:
+                # Solve the linear-rate cumulative for this arrival's time.
+                a, b = lo, hi - lo
+                t = (-a + math.sqrt(a * a + 2 * b * share * (a + b / 2))) / b
+            else:
+                t = share
+            alarms.append(_Alarm(id=f"a{i}", at_s=min(span * 0.999, max(0.0, t * span))))
+        alarms.sort(key=lambda a: a.at_s)
+        profile = LoadProfile(
+            kind=kind, label=label, span_s=span, total_alarms=len(alarms),
+            params=dict(params, seed=seed, span_s=span),
+            notes=["시간대 분포는 가정이다."],
+        )
+        return alarms, profile
+
+    mod = types.ModuleType("svrspec.loadgen")
+    mod.KINDS = ("replay", "ramp", "spike", "soak")
+    mod.LoadProfile = LoadProfile
+    mod.build_load = build_load
+    return mod
+
+
+def _stub_bench() -> types.ModuleType:
+    from svrspec.pipeline import RunStats
+
+    @dataclass(frozen=True)
+    class Frame:
+        t_s: float
+        queued: int
+        active: int
+        cpu_pct: float
+        bw_gbs: float
+        bw_pct: float
+        compute_pct: float
+        kv_gb: float
+        ram_gb: float
+        arrived: int
+        delivered: int
+        offered_rate: float
+        p95_so_far_s: float
+
+    @dataclass(frozen=True)
+    class BenchResult:
+        profile: object
+        machine: dict
+        stats: RunStats
+        frames: list
+        worst: list
+        findings: list
+        breach: dict | None
+        notes: list
+
+    def run_bench(cat, asm, alarms, profile, *, workload, frames=600,
+                  queue_limit=None, worst_n=10):
+        if frames < 1:
+            raise ValueError("frames must be positive")
+        span = profile.span_s or 1.0
+        dt = span / frames
+        counts = [0] * frames
+        for a in alarms:
+            counts[min(frames - 1, int(a.at_s / span * frames))] += 1
+
+        # Crude but monotone: a queue that grows once arrivals outrun service is
+        # the only behaviour the playback layer reads off these frames.
+        per_frame = max(1.0, asm.decode_tps_single * dt / 250.0)
+        rows, queue, delivered_all, worst_s, breach = [], 0.0, 0, 0.0, None
+        for i, arrived in enumerate(counts):
+            queue += arrived
+            served = min(queue, per_frame)
+            queue -= served
+            delivered_all += int(served)
+            p95 = round(queue / max(per_frame, 1e-9) * dt, 3)
+            worst_s = max(worst_s, p95)
+            active = int(min(workload.slots, math.ceil(served)))
+            load = min(1.0, served / max(per_frame, 1e-9))
+            rows.append(Frame(
+                t_s=round(i * dt, 3), queued=int(queue), active=active,
+                cpu_pct=round(100 * load, 1),
+                bw_gbs=round(asm.bandwidth_gbs * load, 3),
+                bw_pct=round(100 * load, 1), compute_pct=round(60 * load, 1),
+                kv_gb=round(0.02 * active, 4),
+                ram_gb=round(asm.ram_used_gb * (0.9 + 0.1 * load), 3),
+                arrived=arrived, delivered=int(served),
+                offered_rate=round(arrived / dt * 86400.0, 1),
+                p95_so_far_s=worst_s,
+            ))
+            if breach is None and worst_s > workload.sla_seconds:
+                breach = {"t_s": rows[-1].t_s, "offered_rate": rows[-1].offered_rate,
+                          "p95_s": worst_s}
+
+        stats = RunStats(
+            received=len(alarms), delivered=delivered_all, dropped=0,
+            p50_s=0.5, p95_s=worst_s, p99_s=worst_s, max_s=worst_s,
+            p95_steady_s=worst_s, storm_drain_s=0.0, max_queue=int(max(
+                (r.queued for r in rows), default=0)),
+            mean_queue=0.0, busy_fraction=0.5, slot_utilisation=0.4,
+            sla_met=breach is None, storm_sla_met=True,
+            tokens_prefill=250 * len(alarms), tokens_generated=250 * delivered_all,
+            wall_clock_s=0.0,
+        )
+        worst = [{"id": f"a{i}", "total_s": round(worst_s, 2), "slot": 0}
+                 for i in range(min(worst_n, len(alarms)))]
+        return BenchResult(
+            profile=profile, machine={"cpu": asm.cpu.id, "ram_gb": asm.ram_total_gb},
+            stats=stats, frames=rows, worst=worst, findings=list(asm.findings),
+            breach=breach, notes=["가상시간으로 돌렸다 — 실제 모델을 실행하지 않았다."],
+        )
+
+    mod = types.ModuleType("svrspec.bench")
+    mod.Frame = Frame
+    mod.BenchResult = BenchResult
+    mod.run_bench = run_bench
+    return mod
+
+
+def _install_engines(monkeypatch) -> None:
+    """Real engines where they exist, stand-ins where they do not."""
+    for name, build in (("svrspec.lab", _stub_lab),
+                        ("svrspec.loadgen", _stub_loadgen),
+                        ("svrspec.bench", _stub_bench)):
+        if importlib.util.find_spec(name) is None:
+            monkeypatch.setitem(sys.modules, name, build())
+
+
+@pytest.fixture
+def engines(monkeypatch):
+    _install_engines(monkeypatch)
+
+
+#: An eight-channel board with two DIMMs in it: 128 GB of perfectly good memory
+#: running at a quarter of the bandwidth. The build this screen exists to catch.
+STARVED = {
+    **BASE_REQUEST,
+    "cpu": "test-amx-8ch",
+    "dimm_gb": 64,
+    "dimm_count": 2,
+    "sockets": 1,
+    "slots": 4,
+}
+#: The same part, with every channel filled. 64 GB is the only DDR5 capacity in
+#: the fixture catalogue, which is the point the remedy has to make: you cannot
+#: always spread the *same* gigabytes across every channel with what is stocked.
+FULL = {**STARVED, "dimm_count": 8}
+
+
+def _lab(cat, request):
+    from svrspec.gui import lab_payload
+
+    return lab_payload(cat, _params(request), request["cpu"], request.get("name", "A"))
+
+
+def test_catalog_payload_carries_the_cpus_the_lab_picks_from(cat):
+    """The lab picks one part by hand; it cannot sweep, so it needs the list."""
+    payload = catalog_payload(cat)
+    json.dumps(payload, allow_nan=False)
+    assert payload["cpus"], "the lab dropdown has nothing to offer without this"
+    assert {c["id"] for c in payload["cpus"]} == {c.id for c in cat.cpus}
+    for key in ("label", "cores", "mem_channels", "sockets_max", "ddr_gen", "max_mem_gb"):
+        assert key in payload["cpus"][0], key
+
+
+def test_lab_payload_carries_every_finding_with_its_remedy(cat, engines):
+    """A problem without a fix is worse than silence: it strands the reader."""
+    d = _lab(cat, STARVED)
+    json.dumps(d, allow_nan=False)
+
+    assert d["findings"], "a two-DIMM eight-channel board is not a clean build"
+    for f in d["findings"]:
+        assert f["level"] in ("error", "warn", "info")
+        assert f["code"] and f["message"]
+    # Every warning and error has to say how to fix itself.
+    assert all(f["remedy"] for f in d["findings"] if f["level"] in ("error", "warn"))
+    assert d["errors"] + d["warnings"] <= len(d["findings"])
+
+
+def test_two_dimms_in_an_eight_channel_board_cost_three_quarters_of_the_bandwidth(
+    cat, engines
+):
+    """The whole point of the screen, asserted as arithmetic.
+
+    Capacity looks fine and decode collapses with the bandwidth, because decode
+    reads the whole weight set out of DRAM per token. If the payload ever
+    reports the full-channel figure here, the warning becomes decoration.
+    """
+    d = _lab(cat, STARVED)
+
+    codes = {f["code"] for f in d["findings"]}
+    assert "channels-underfilled" in codes
+
+    assert d["channels"] == {"total": 8, "populated": 2, "dimms_per_channel": 1,
+                             "fill_pct": 25.0}
+    ratio = d["bandwidth"]["gbs"] / d["bandwidth"]["full_gbs"]
+    assert abs(ratio - 0.25) < 0.01, (d["bandwidth"], "bandwidth is not a quarter")
+    assert d["bandwidth"]["loss_pct"] == pytest.approx(75.0, abs=1.0)
+
+    # Decode is bandwidth bound, so it falls with it -- that is the sentence the
+    # operator has to read, and it has to be in the payload to be readable.
+    decode = d["throughput"]
+    assert decode["decode_tps_single"] < decode["decode_tps_full"]
+    assert decode["decode_loss_pct"] >= 50
+
+
+def test_a_fully_populated_board_raises_no_channel_warning(cat, engines):
+    d = _lab(cat, FULL)
+    assert "channels-underfilled" not in {f["code"] for f in d["findings"]}
+    assert d["channels"]["populated"] == d["channels"]["total"]
+    assert d["bandwidth"]["gbs"] == d["bandwidth"]["full_gbs"]
+    assert d["bandwidth"]["loss_pct"] in (None, 0.0)
+    assert d["ok"] is True
+
+
+def test_lab_payload_offers_the_dimm_combinations_the_dropdown_needs(cat, engines):
+    d = _lab(cat, STARVED)
+    assert d["options"], "the capacity dropdown is built from this"
+    for o in d["options"]:
+        assert o["dimm_gb"] > 0 and o["count"] > 0
+        assert o["dpc"] in (1, 2)
+        assert o["ram_total_gb"] == o["dimm_gb"] * o["count"]
+
+
+def test_the_live_assembly_never_runs_a_bench(cat, engines, monkeypatch):
+    """Performance guard, the same one the capacity search has.
+
+    Assembly runs on every dropdown change. A bench builds a load and pushes it
+    through the queue engine; hanging that off the live path would turn a
+    simulator into a spinner. So the immediate payload must not touch it.
+    """
+    import svrspec.bench as bench_module
+    import svrspec.loadgen as loadgen_module
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a bench ran on the live assembly path")
+
+    monkeypatch.setattr(bench_module, "run_bench", explode)
+    monkeypatch.setattr(loadgen_module, "build_load", explode)
+
+    assert _lab(cat, STARVED)["headline"]
+    assert _lab(cat, FULL)["ok"] is True
+
+
+def test_bench_payload_carries_frames_breach_stats_and_worst(cat, engines):
+    from svrspec.gui import bench_payload
+
+    request = {**FULL, "kind": "ramp",
+               "profile": {"start_rate": 100, "end_rate": 4000, "hours": 24},
+               "frames": 240}
+    d = bench_payload(cat, _params(request), request["cpu"], request)
+    json.dumps(d, allow_nan=False)
+
+    for key in ("frames", "breach", "stats", "worst", "profile", "machine", "findings"):
+        assert key in d, key
+    assert d["blocked"] is None
+    assert len(d["frames"]) == 240
+    assert d["profile"]["kind"] == "ramp" and d["profile"]["span_s"] == 86400.0
+    assert d["stats"]["received"] > 0
+
+    first = d["frames"][0]
+    for key in ("t_s", "queued", "active", "cpu_pct", "bw_gbs", "bw_pct",
+                "compute_pct", "kv_gb", "ram_gb", "arrived", "delivered",
+                "offered_rate", "p95_so_far_s"):
+        assert key in first, key
+    times = [f["t_s"] for f in d["frames"]]
+    assert times == sorted(times)
+
+    # A ramp exists to find the breaking point; the payload has to carry it or
+    # the chart has nothing to mark.
+    if d["breach"]:
+        assert set(d["breach"]) >= {"t_s", "offered_rate", "p95_s"}
+        before = [f for f in d["frames"] if f["t_s"] < d["breach"]["t_s"]]
+        assert all(f["p95_so_far_s"] <= d["sla"]["sla_seconds"] for f in before)
+
+
+def test_bench_refuses_a_build_that_cannot_be_ordered(cat, engines):
+    """An error-level finding is not a machine, so numbers about it are fiction."""
+    from svrspec.gui import bench_payload
+
+    request = {**BASE_REQUEST, "cpu": "test-amx-8ch", "dimm_gb": 32,
+               "dimm_count": 0, "kind": "ramp"}
+    d = bench_payload(cat, _params(request), request["cpu"], request)
+    json.dumps(d, allow_nan=False)
+    assert d["ok"] is False
+    assert d["blocked"]
+    assert d["frames"] == [] and d["breach"] is None
+    assert any(f["level"] == "error" for f in d["findings"])
+
+
+def test_bench_parameters_are_clamped_and_scoped_to_their_profile():
+    from svrspec.gui import BENCH_DEFAULTS, _bench_kind, _bench_params
+
+    # A ramp never sees a spike's knobs, so a stale field cannot reach a
+    # keyword the engine does not take.
+    assert set(_bench_params("ramp", {"peak_rate": 9, "start_rate": 5})) == {
+        "start_rate", "end_rate", "hours"
+    }
+    assert _bench_params("ramp", {"hours": 10**6})["hours"] == 336
+    assert _bench_params("ramp", {"start_rate": -4})["start_rate"] == 1
+    assert _bench_params("ramp", {"end_rate": "많이"})["end_rate"] == \
+        BENCH_DEFAULTS["end_rate"]
+    assert _bench_params("replay", {"date": "; rm -rf /"})["date"] == "2026-06-01"
+    assert _bench_params("replay", {"count": 0})["count"] is None
+    assert _bench_kind({"kind": "nope"}) == "replay"
+    assert _bench_kind({"kind": "soak"}) == "soak"
+
+
+def test_no_payload_leaks_an_infinity_to_the_browser(cat, engines):
+    """`JSON.parse` rejects the literal Python emits, so it must never be sent."""
+    from svrspec.gui import _clean, _r
+
+    assert _r(float("inf")) is None
+    assert _r(float("nan")) is None
+    assert _clean({"a": float("inf"), "b": [1.0, float("-inf")], "c": {"d": float("nan")}}) \
+        == {"a": None, "b": [1.0, None], "c": {"d": None}}
+
+    request = {**FULL, "kind": "soak", "profile": {"rate": 300, "hours": 72},
+               "frames": 60}
+    from svrspec.gui import bench_payload
+
+    d = bench_payload(cat, _params(request), request["cpu"], request)
+    json.dumps(d, allow_nan=False)   # the guard the handler applies for real
+
+
+def test_lab_limits_clamp_the_board_the_browser_asked_for():
+    p = _params({"dimm_gb": 10**6, "dimm_count": -3})
+    assert p["dimm_gb"] == LIMITS["dimm_gb"][1]
+    assert p["dimm_count"] == 0        # zero is a build the lab has to describe
+
+
+# --------------------------------------------------------------------------
+# Lab routes
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def lab_server(monkeypatch):
+    """A live server with the engines resolved the same way the tests are."""
+    _install_engines(monkeypatch)
+    handler = type("H", (_Handler,), {"catalog": Catalog(DATA)})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}"
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def test_lab_route_round_trip(lab_server):
+    status, d = _post(lab_server + "/api/lab", STARVED)
+    assert status == 200
+    assert d["channels"]["populated"] == 2
+    assert "channels-underfilled" in {f["code"] for f in d["findings"]}
+
+
+def test_lab_route_rejects_an_unknown_cpu(lab_server):
+    status, d = _post(lab_server + "/api/lab", {**STARVED, "cpu": "nope"})
+    assert status == 400
+    assert "unknown cpu id" in d["error"]
+
+
+def test_bench_route_round_trip(lab_server):
+    status, d = _post(lab_server + "/api/bench", {
+        **FULL, "kind": "ramp", "frames": 120,
+        "profile": {"start_rate": 100, "end_rate": 3000, "hours": 24},
+    })
+    assert status == 200
+    assert len(d["frames"]) == 120
+    assert d["profile"]["kind"] == "ramp"
+    assert "stats" in d and "worst" in d
+
+
+def test_bench_route_survives_a_garbage_profile(lab_server):
+    status, d = _post(lab_server + "/api/bench", {
+        **FULL, "kind": "구름", "frames": "많이", "profile": "not a dict",
+    })
+    assert status == 200
+    assert d["kind"] == "replay"           # unknown kinds fall back, they do not 500
+    assert len(d["frames"]) == 600
+
+
+def test_an_unroutable_lab_path_is_still_404(lab_server):
+    status, _ = _post(lab_server + "/api/labs", {})
+    assert status == 404
+
+
+# --------------------------------------------------------------------------
+# The lab screen
+# --------------------------------------------------------------------------
+
+
+def test_the_page_runs_a_bench_only_from_the_button():
+    """The client half of the live-path guard.
+
+    Two mentions each: the transport plus its single caller, and the handler
+    plus the click that wires it. A third would mean something started running
+    a load test automatically.
+    """
+    assert SERVER_HTML.count("askBench") == 2
+    assert SERVER_HTML.count("runBench") == 2
+    assert 'byId("lab-run").addEventListener("click", runBench)' in SERVER_HTML
+    # Assembly is the opposite: cheap, and wired to every change on the form.
+    assert SERVER_HTML.count("askLab") == 2
+    assert 'railForm.addEventListener("input", onLabInput)' in SERVER_HTML
+
+
+def test_the_lab_screen_offers_a_gauge_per_resource():
+    for name in ("CPU 가동", "대기 큐", "메모리 대역폭", "RAM 실사용"):
+        assert f'"{name}"' in SERVER_HTML, name
+    # Four different columns of the frame, not one number wearing four labels.
+    for column in ("cpu_pct", "queued", "bw_pct", "ram_gb"):
+        assert f"f.{column}" in SERVER_HTML, column
+
+
+def test_the_player_offers_speeds_and_a_scrub():
+    assert '[[1, "1×"], [60, "60×"], [600, "600×"], [0, "즉시"]]' in SERVER_HTML
+    assert 'range.type = "range"' in SERVER_HTML
+    assert 'range.setAttribute("aria-label", "재생 위치")' in SERVER_HTML
+    assert "requestAnimationFrame(step)" in SERVER_HTML
+
+
+def test_reduced_motion_shows_the_final_state_without_animating():
+    assert 'window.matchMedia("(prefers-reduced-motion: reduce)")' in SERVER_HTML
+    assert "if(STILL){" in SERVER_HTML
+    assert "controls.hidden = true" in SERVER_HTML
+
+
+def test_the_breach_is_drawn_as_a_marker_not_only_a_sentence():
+    """The ramp's whole output is "where does it break". It has to be visible."""
+    assert "breachLine" in SERVER_HTML
+    assert "SLA 붕괴 지점" in SERVER_HTML
+    assert "c.run.breach" in SERVER_HTML
+
+
+def test_the_lab_keeps_two_builds_side_by_side():
+    assert 'id="mach-a"' in SERVER_HTML and 'id="mach-b"' in SERVER_HTML
+    assert 'id="lab-compare"' in SERVER_HTML
+    assert "asm-pair" in SERVER_HTML
+    assert 'stroke-dasharray"] = "5 3"' in SERVER_HTML   # machine B, overlaid
+
+
+def test_the_desktop_page_degrades_when_the_bridge_has_no_lab_call():
+    assert "window.pywebview.api.lab" in DESKTOP_HTML
+    assert "window.pywebview.api.bench" in DESKTOP_HTML
+    assert "데스크톱 빌드에는 가상 랩이 연결되어 있지 않다" in DESKTOP_HTML
+
+
+def test_every_lab_control_carries_a_visible_label():
+    """Covered globally too, but this is the screen that just added fifteen."""
+    ids = set(re.findall(r'<(?:input|select)[^>]*\bid="(lab-[^"]+|bp-[^"]+)"', SERVER_HTML))
+    labelled = set(re.findall(r'<label[^>]*\bfor="([^"]+)"', SERVER_HTML))
+    assert len(ids) >= 15
+    assert not (ids - labelled)
+
+
+def test_the_lab_findings_carry_a_word_not_only_a_colour():
+    assert '{error: "오류", warn: "경고", info: "참고"}' in SERVER_HTML
+    assert "고치는 법 · " in SERVER_HTML       # the remedy, always rendered
+
+
+def test_desktop_api_serves_the_lab_and_the_bench(engines):
+    """Degrading gracefully is the fallback, not the goal.
+
+    The packaged app is how this ships on Windows, and "run it in server mode
+    instead" is not an answer for an operator who was handed an installer.
+    """
+    from svrspec.desktop import Api
+
+    api = Api(Catalog(DATA))
+    d = api.lab(STARVED)
+    assert "error" not in d
+    assert "channels-underfilled" in {f["code"] for f in d["findings"]}
+
+    b = api.bench({**FULL, "kind": "ramp", "frames": 90,
+                   "profile": {"start_rate": 100, "end_rate": 3000, "hours": 24}})
+    assert "error" not in b
+    assert len(b["frames"]) == 90
+
+    # Marshalled as a JSON string, like some webview bridges do.
+    assert "error" not in api.lab(json.dumps(STARVED))
+
+
+def test_desktop_lab_reports_bad_input_instead_of_raising(engines):
+    from svrspec.desktop import Api
+
+    api = Api(Catalog(DATA))
+    assert "error" in api.lab({**STARVED, "cpu": "no-such-cpu"})
+    assert "error" in api.lab([1, 2, 3])
+    assert "error" in api.bench({**FULL, "cpu": "no-such-cpu"})
