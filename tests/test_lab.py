@@ -116,7 +116,16 @@ def test_the_underfilled_finding_scales_with_how_underfilled_it_is(cat):
 # --------------------------------------------------------------------------
 
 
-def test_the_underfilled_remedy_says_the_module_size_needed_is_not_sold(cat):
+def test_the_underfilled_remedy_keeps_the_capacity_the_operator_asked_for(cat):
+    """128 GB over 8 channels is 8x16GB, and that module is a real SKU.
+
+    This test used to assert the opposite -- the catalogue carried only 32 and
+    64 GB modules, so the only way to fill an eight-channel board was 256 GB and
+    the remedy had to say "buy four times the memory". Small RDIMMs were added
+    because that advice was an artefact of missing catalogue rows, not a fact
+    about hardware. Bandwidth comes from filling channels; capacity only has to
+    be enough to hold the model.
+    """
     cpu = cat.cpu(CPU_8CH)
     available = {
         m.dimm_gb for m in cat.memory
@@ -124,20 +133,15 @@ def test_the_underfilled_remedy_says_the_module_size_needed_is_not_sold(cat):
         and m.dimms_per_channel == 1
         and m.rated_mts <= cpu.max_ddr_mts
     }
-    # The premise: 128 GB over 8 channels wants 16 GB modules, which the
-    # catalogue does not carry. If this ever changes, the remedy below changes
-    # shape and this test is the place that should say so.
-    assert 16 not in available, f"catalogue now carries 16GB DIMMs: {available}"
-    assert 32 in available
+    assert {8, 16, 32, 64} <= available
 
     remedy = finding(assemble(cat, vm(dimm_gb=64, dimm_count=2)),
                      "channels-underfilled").remedy
 
     assert "8장" in remedy or "8×" in remedy      # fill every channel
-    assert "16GB" in remedy                       # what that would take
-    assert "카탈로그" in remedy                     # ...and that it is not sold
-    assert "32GB" in remedy                       # the smallest one that is
-    assert "256GB" in remedy                      # so this is the real option
+    assert "16GB" in remedy                       # with the module that does it
+    assert "128GB" in remedy                      # keeping the capacity asked for
+    assert "카탈로그" not in remedy                 # nothing is missing any more
 
 
 def test_the_remedy_names_the_split_when_the_module_size_does_exist(cat):
@@ -286,13 +290,19 @@ def test_a_full_board_is_never_called_awkward(cat):
 
 
 def test_a_dimm_size_the_catalogue_lacks_is_flagged_not_silently_accepted(cat):
-    asm = assemble(cat, vm(dimm_gb=16, dimm_count=8))
+    """A capacity nobody sells must be flagged, not quietly priced in.
+
+    48 GB RDIMMs exist in the market but are not in this catalogue, so the
+    speed grade has to be borrowed from a neighbouring module -- and borrowing
+    is an assumption the report has to carry.
+    """
+    asm = assemble(cat, vm(dimm_gb=48, dimm_count=8))
     f = finding(asm, "dimm-not-catalogued")
     assert f.level == "warn"
-    assert "16GB" in f.message
+    assert "48GB" in f.message
     # Capacity still follows what was asked for; only the speed grade is borrowed.
-    assert asm.ram_total_gb == 128
-    assert asm.memory.dimm_gb != 16
+    assert asm.ram_total_gb == 384
+    assert asm.memory.dimm_gb != 48
 
 
 # --------------------------------------------------------------------------

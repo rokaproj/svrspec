@@ -28,6 +28,32 @@
       "notes": "No page that answered names DDR4-2666 as a platform grade -- the Ice Lake-SP tables only ever show 2933 and 3200 -- so this grade is carried over from the previous round unconfirmed."
     },
     {
+      "id": "ddr4-2666-1dpc-16gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2666,
+      "dimms_per_channel": 1,
+      "effective_mts": 2666,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr4-2666-1dpc-8gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2666,
+      "dimms_per_channel": 1,
+      "effective_mts": 2666,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr4-2666-2dpc-64gb",
       "ddr_gen": "DDR4",
       "rated_mts": 2666,
@@ -52,6 +78,32 @@
       "source": "unverified",
       "source_url": "",
       "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (2666 -> 2666 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+    },
+    {
+      "id": "ddr4-2666-2dpc-16gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2666,
+      "dimms_per_channel": 2,
+      "effective_mts": 2666,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr4-2666-2dpc-8gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2666,
+      "dimms_per_channel": 2,
+      "effective_mts": 2666,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "ddr4-2933-1dpc-64gb",
@@ -80,6 +132,32 @@
       "notes": "DDR4-2933 is confirmed as a real Ice Lake-SP grade: the cited page's Platinum SKU table lists \"8xDDR4-2933\" for 8351N and 8352V. At one DIMM per channel the grade runs at its rated speed, which is what effective_mts records here."
     },
     {
+      "id": "ddr4-2933-1dpc-16gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2933,
+      "dimms_per_channel": 1,
+      "effective_mts": 2933,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr4-2933-1dpc-8gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2933,
+      "dimms_per_channel": 1,
+      "effective_mts": 2933,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr4-2933-2dpc-64gb",
       "ddr_gen": "DDR4",
       "rated_mts": 2933,
@@ -104,6 +182,32 @@
       "source": "unverified",
       "source_url": "",
       "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (2933 -> 2933 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+    },
+    {
+      "id": "ddr4-2933-2dpc-16gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2933,
+      "dimms_per_channel": 2,
+      "effective_mts": 2933,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr4-2933-2dpc-8gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 2933,
+      "dimms_per_channel": 2,
+      "effective_mts": 2933,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "ddr4-3200-1dpc-64gb",
@@ -132,6 +236,32 @@
       "notes": "The cited AMD datasheet lists 3200 in a column headed \"UP TO MAX DDR MT/S (1DPC)\", so DDR4-3200 at one DIMM per channel is a vendor-stated figure, and 204.8 GB/s per socket over 8 channels follows from it. At one DIMM per channel the grade runs at its rated speed, which is what effective_mts records here."
     },
     {
+      "id": "ddr4-3200-1dpc-16gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 3200,
+      "dimms_per_channel": 1,
+      "effective_mts": 3200,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "vendor_datasheet",
+      "source_url": "https://www.amd.com/content/dam/amd/en/documents/epyc-business-docs/datasheets/amd-epyc-7003-series-product-datasheet.pdf",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr4-3200-1dpc-8gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 3200,
+      "dimms_per_channel": 1,
+      "effective_mts": 3200,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "vendor_datasheet",
+      "source_url": "https://www.amd.com/content/dam/amd/en/documents/epyc-business-docs/datasheets/amd-epyc-7003-series-product-datasheet.pdf",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr4-3200-2dpc-64gb",
       "ddr_gen": "DDR4",
       "rated_mts": 3200,
@@ -156,6 +286,32 @@
       "source": "unverified",
       "source_url": "",
       "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (3200 -> 2933 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+    },
+    {
+      "id": "ddr4-3200-2dpc-16gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 3200,
+      "dimms_per_channel": 2,
+      "effective_mts": 2933,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr4-3200-2dpc-8gb",
+      "ddr_gen": "DDR4",
+      "rated_mts": 3200,
+      "dimms_per_channel": 2,
+      "effective_mts": 2933,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "ddr5-4000-1dpc-64gb",
@@ -184,6 +340,32 @@
       "notes": "DDR5-4000 is the Sapphire Rapids Silver grade; the cited page's SKU table gives \"4000 MT/s\" for Silver 4410Y and 4416+. At one DIMM per channel the grade runs at its rated speed, which is what effective_mts records here."
     },
     {
+      "id": "ddr5-4000-1dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4000,
+      "dimms_per_channel": 1,
+      "effective_mts": 4000,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Sapphire_Rapids",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-4000-1dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4000,
+      "dimms_per_channel": 1,
+      "effective_mts": 4000,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Sapphire_Rapids",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr5-4000-2dpc-64gb",
       "ddr_gen": "DDR5",
       "rated_mts": 4000,
@@ -208,6 +390,32 @@
       "source": "unverified",
       "source_url": "",
       "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4000 -> 4000 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+    },
+    {
+      "id": "ddr5-4000-2dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4000,
+      "dimms_per_channel": 2,
+      "effective_mts": 4000,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-4000-2dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4000,
+      "dimms_per_channel": 2,
+      "effective_mts": 4000,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "ddr5-4400-1dpc-64gb",
@@ -236,6 +444,32 @@
       "notes": "DDR5-4400 is confirmed by the cited page's SKU table (Gold 5416S and Gold 6430 both read \"4400 MT/s\"). At one DIMM per channel the grade runs at its rated speed, which is what effective_mts records here."
     },
     {
+      "id": "ddr5-4400-1dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4400,
+      "dimms_per_channel": 1,
+      "effective_mts": 4400,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Sapphire_Rapids",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-4400-1dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4400,
+      "dimms_per_channel": 1,
+      "effective_mts": 4400,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Sapphire_Rapids",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr5-4400-2dpc-64gb",
       "ddr_gen": "DDR5",
       "rated_mts": 4400,
@@ -260,6 +494,32 @@
       "source": "unverified",
       "source_url": "",
       "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4400 -> 4000 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+    },
+    {
+      "id": "ddr5-4400-2dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4400,
+      "dimms_per_channel": 2,
+      "effective_mts": 4000,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-4400-2dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4400,
+      "dimms_per_channel": 2,
+      "effective_mts": 4000,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "ddr5-4800-1dpc-64gb",
@@ -288,6 +548,32 @@
       "notes": "The cited AMD datasheet lists 4800 in a column headed \"UP TO MAX DDR5 MT/S (1DPC)\", so DDR5-4800 at one DIMM per channel is a vendor-stated figure, and 460.8 GB/s per socket over 12 channels follows from it. It is also the Sapphire Rapids platform ceiling. At one DIMM per channel the grade runs at its rated speed, which is what effective_mts records here."
     },
     {
+      "id": "ddr5-4800-1dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4800,
+      "dimms_per_channel": 1,
+      "effective_mts": 4800,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "vendor_datasheet",
+      "source_url": "https://www.amd.com/content/dam/amd/en/documents/products/epyc/epyc-9004-series-processors-data-sheet.pdf",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-4800-1dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4800,
+      "dimms_per_channel": 1,
+      "effective_mts": 4800,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "vendor_datasheet",
+      "source_url": "https://www.amd.com/content/dam/amd/en/documents/products/epyc/epyc-9004-series-processors-data-sheet.pdf",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr5-4800-2dpc-64gb",
       "ddr_gen": "DDR5",
       "rated_mts": 4800,
@@ -312,6 +598,32 @@
       "source": "unverified",
       "source_url": "",
       "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4800 -> 4400 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+    },
+    {
+      "id": "ddr5-4800-2dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4800,
+      "dimms_per_channel": 2,
+      "effective_mts": 4400,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-4800-2dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 4800,
+      "dimms_per_channel": 2,
+      "effective_mts": 4400,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "ddr5-5200-1dpc-64gb",
@@ -340,6 +652,32 @@
       "notes": "DDR5-5200 is confirmed by the cited page's SKU table: Gold 6542Y and Platinum 8558 both read \"5200 MT/s\". These rows exist because those two SKUs were corrected this round from an incorrect 5600. At one DIMM per channel the grade runs at its rated speed, which is what effective_mts records here."
     },
     {
+      "id": "ddr5-5200-1dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 5200,
+      "dimms_per_channel": 1,
+      "effective_mts": 5200,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Emerald_Rapids",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-5200-1dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 5200,
+      "dimms_per_channel": 1,
+      "effective_mts": 5200,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Emerald_Rapids",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr5-5600-1dpc-64gb",
       "ddr_gen": "DDR5",
       "rated_mts": 5600,
@@ -364,6 +702,32 @@
       "source": "third_party_db",
       "source_url": "https://en.wikipedia.org/wiki/Emerald_Rapids",
       "notes": "DDR5-5600 is the Emerald Rapids generation ceiling and the cited page's SKU table gives it for Platinum 8558P. No CPU in cpus.json reaches 5600 after this round's corrections -- 8558P is not in the catalog -- so nothing selects this row today; it is kept so the memory axis need not change when such a SKU is added. At one DIMM per channel the grade runs at its rated speed, which is what effective_mts records here."
+    },
+    {
+      "id": "ddr5-5600-1dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 5600,
+      "dimms_per_channel": 1,
+      "effective_mts": 5600,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Emerald_Rapids",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-5600-1dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 5600,
+      "dimms_per_channel": 1,
+      "effective_mts": 5600,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Emerald_Rapids",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "ddr5-5600-2dpc-64gb",
@@ -392,6 +756,32 @@
       "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (5600 -> 4400 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
     },
     {
+      "id": "ddr5-5600-2dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 5600,
+      "dimms_per_channel": 2,
+      "effective_mts": 4400,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-5600-2dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 5600,
+      "dimms_per_channel": 2,
+      "effective_mts": 4400,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "unverified",
+      "source_url": "",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr5-6400-1dpc-64gb",
       "ddr_gen": "DDR5",
       "rated_mts": 6400,
@@ -418,6 +808,32 @@
       "notes": "Xeon 6(Granite Rapids)가 1DPC DDR5-6400 / 2DPC DDR5-5200 으로 동작한다고 인용 문서가 명시한다 — 이 행의 2DPC derate가 그것과 일치한다."
     },
     {
+      "id": "ddr5-6400-1dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 6400,
+      "dimms_per_channel": 1,
+      "effective_mts": 6400,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-6400-1dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 6400,
+      "dimms_per_channel": 1,
+      "effective_mts": 6400,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+    },
+    {
       "id": "ddr5-6400-2dpc-64gb",
       "ddr_gen": "DDR5",
       "rated_mts": 6400,
@@ -442,6 +858,32 @@
       "source": "third_party_db",
       "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
       "notes": "Xeon 6(Granite Rapids)가 1DPC DDR5-6400 / 2DPC DDR5-5200 으로 동작한다고 인용 문서가 명시한다 — 이 행의 2DPC derate가 그것과 일치한다."
+    },
+    {
+      "id": "ddr5-6400-2dpc-16gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 6400,
+      "dimms_per_channel": 2,
+      "effective_mts": 5200,
+      "dimm_gb": 16,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+    },
+    {
+      "id": "ddr5-6400-2dpc-8gb",
+      "ddr_gen": "DDR5",
+      "rated_mts": 6400,
+      "dimms_per_channel": 2,
+      "effective_mts": 5200,
+      "dimm_gb": 8,
+      "ecc": true,
+      "kind": "RDIMM",
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
+      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
     },
     {
       "id": "mrdimm-8800-1dpc-64gb",

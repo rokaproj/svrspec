@@ -155,3 +155,73 @@ def test_shipped_catalogue_is_valid_if_present():
     assert cat.models and cat.cpus and cat.memory and cat.quants
     for cpu in cat.cpus:
         cat.memory_for(cpu, 1)  # every CPU must have a usable memory option
+
+
+def test_the_catalogue_carries_the_small_dimms_that_fill_a_board_cheaply():
+    """8 and 16 GB RDIMMs exist, and leaving them out distorted the advice.
+
+    Bandwidth comes from filling every channel, not from capacity. With only
+    32 and 64 GB modules catalogued, the only way to populate an eight-channel
+    board was 256 GB -- so the tool told people to buy four times the memory
+    they needed. 8x8GB fills the same board for 64 GB at the same speed.
+    """
+    from svrspec.catalog import Catalog
+
+    catalog = Catalog()
+    ddr5_1dpc = [
+        m for m in catalog.memory
+        if m.ddr_gen == "DDR5" and m.dimms_per_channel == 1
+    ]
+    sizes = {m.dimm_gb for m in ddr5_1dpc}
+    assert {8, 16, 32, 64} <= sizes
+
+    # Capacity must not change the clock at a given grade and population.
+    by_grade: dict[int, set[int]] = {}
+    for m in ddr5_1dpc:
+        by_grade.setdefault(m.rated_mts, set()).add(m.effective_mts)
+    for rated, effective in by_grade.items():
+        assert len(effective) == 1, (
+            f"DDR5-{rated} at 1DPC reports {effective} depending on module size; "
+            f"capacity does not change the clock"
+        )
+
+
+def test_every_dimm_size_reaches_the_same_bandwidth_when_the_board_is_full():
+    """The whole point: a full board is a full board, whatever the modules."""
+    from svrspec.catalog import Catalog
+    from svrspec.lab import VirtualMachine, assemble
+
+    catalog = Catalog()
+    reference = None
+    for size in (8, 16, 32, 64):
+        assembly = assemble(catalog, VirtualMachine(
+            name="t", cpu_id="xeon-gold-6426y", sockets=1,
+            dimm_gb=size, dimm_count=8,
+            model_id="qwen2.5-7b-instruct", quant_id="Q4_K_M", slots=4,
+        ))
+        assert assembly.channels_populated == assembly.channels_total
+        assert assembly.ram_total_gb == size * 8
+        if reference is None:
+            reference = assembly.bandwidth_gbs
+        assert assembly.bandwidth_gbs == pytest.approx(reference)
+        assert not [f for f in assembly.findings if f.code == "channels-underfilled"]
+
+
+def test_the_underfilled_remedy_now_offers_a_same_capacity_fix():
+    """Two 64 GB DIMMs should be told to become eight 16 GB ones.
+
+    Before the small modules were catalogued this advice had to be "buy 256 GB",
+    which is four times the memory for the same result.
+    """
+    from svrspec.catalog import Catalog
+    from svrspec.lab import VirtualMachine, assemble
+
+    catalog = Catalog()
+    assembly = assemble(catalog, VirtualMachine(
+        name="t", cpu_id="xeon-gold-6426y", sockets=1, dimm_gb=64, dimm_count=2,
+        model_id="qwen2.5-7b-instruct", quant_id="Q4_K_M", slots=4,
+    ))
+    finding = next(f for f in assembly.findings if f.code == "channels-underfilled")
+    assert "8" in finding.remedy and "16GB" in finding.remedy
+    # The remedy keeps the capacity the operator asked for.
+    assert "128GB" in finding.remedy
