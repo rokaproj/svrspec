@@ -1567,3 +1567,35 @@ def test_desktop_lab_reports_bad_input_instead_of_raising(engines):
     assert "error" in api.lab({**STARVED, "cpu": "no-such-cpu"})
     assert "error" in api.lab([1, 2, 3])
     assert "error" in api.bench({**FULL, "cpu": "no-such-cpu"})
+
+
+def test_the_desktop_bridge_cannot_hang_the_window_forever():
+    """A missed `pywebviewready` event must not leave the page pending.
+
+    The original wait attached a listener and nothing else. If pywebview had
+    already fired the event before this script ran, the listener never fired,
+    the promise never settled, and the window sat on "카탈로그를 불러오는 중…"
+    with no error -- a pending promise cannot reach a .catch(). The fix is to
+    poll for the object as well and to reject after a bounded wait.
+    """
+    page = app_html("desktop")
+
+    assert "BRIDGE_TIMEOUT_MS" in page
+    assert "setInterval" in page          # the poll that covers the missed event
+    assert "clearInterval" in page        # and it must be torn down
+    assert "reject(" in page              # a bounded wait that actually fails
+
+    # The remedy has to travel with the failure.
+    assert "서버 방식" in page
+    assert "WebView2" in page
+
+    # The guard must check the method it is about to call, not just the object:
+    # pywebview populates `window.pywebview` before the api is usable.
+    assert "window.pywebview.api.catalog" in page
+
+
+def test_a_boot_failure_clears_the_loading_placeholder():
+    """The window may not keep claiming it is loading after it has given up."""
+    page = app_html("server")
+    assert 'id="empty"' in page
+    assert "empty.remove()" in page

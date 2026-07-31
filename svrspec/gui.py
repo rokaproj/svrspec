@@ -2033,10 +2033,43 @@ def app_html(mode: str = "server") -> str:
   var MODE = document.body.getAttribute("data-mode") || "server";
   var DESKTOP = MODE === "desktop";
 
+  // How long to keep waiting for the desktop bridge before giving up, and how
+  // often to look for it. Waiting on the `pywebviewready` event alone is not
+  // enough: if the event fired before this script attached its listener, the
+  // listener never runs and the promise stays pending forever -- the window sits
+  // on "카탈로그를 불러오는 중…" with nothing to click and no error, because a
+  // promise that never settles cannot reach a .catch(). So poll for the object
+  // as well, and fail loudly rather than hang.
+  var BRIDGE_TIMEOUT_MS = 15000, BRIDGE_POLL_MS = 50;
+
+  function bridgeUp(){
+    return !!(window.pywebview && window.pywebview.api && window.pywebview.api.catalog);
+  }
+
   function bridgeReady(){
-    if(!DESKTOP || (window.pywebview && window.pywebview.api)) return Promise.resolve();
-    return new Promise(function(resolve){
-      window.addEventListener("pywebviewready", function(){ resolve(); }, {once:true});
+    if(!DESKTOP || bridgeUp()) return Promise.resolve();
+    return new Promise(function(resolve, reject){
+      var done = false, timer = null;
+      function settle(ok){
+        if(done) return;
+        done = true;
+        if(timer) clearInterval(timer);
+        window.removeEventListener("pywebviewready", onReady);
+        if(ok) resolve();
+        else reject(new Error(
+          "데스크톱 브리지가 " + (BRIDGE_TIMEOUT_MS / 1000) + "초 안에 준비되지 않았다. " +
+          "창을 닫고 다시 열어라. 계속 같으면 WebView2 런타임을 확인하거나 " +
+          "서버 방식(svrspec gui)으로 실행해라."));
+      }
+      function onReady(){ settle(true); }
+      window.addEventListener("pywebviewready", onReady, {once:true});
+      // The event may already have fired. Polling is what actually covers that.
+      var waited = 0;
+      timer = setInterval(function(){
+        if(bridgeUp()) return settle(true);
+        waited += BRIDGE_POLL_MS;
+        if(waited >= BRIDGE_TIMEOUT_MS) settle(false);
+      }, BRIDGE_POLL_MS);
     });
   }
   function askCatalog(){
@@ -4208,8 +4241,17 @@ def app_html(mode: str = "server") -> str:
     modelHint(); tokenHint(); run();
     checkForUpdate();
   }).catch(function(err){
+    // Whatever went wrong, the window must stop saying "불러오는 중" and say
+    // what happened. The bridge failure carries its own remedy; anything else
+    // gets the generic one.
+    var msg = (err && err.message) ? err.message : String(err);
     results.textContent = "";
-    results.appendChild(el("div", "note", "카탈로그를 불러오지 못했다: " + err));
+    var box = el("div", "note");
+    box.appendChild(el("p", "", msg.indexOf("브리지") >= 0
+      ? msg : ("카탈로그를 불러오지 못했다: " + msg)));
+    results.appendChild(box);
+    var empty = document.getElementById("empty");
+    if(empty) empty.remove();
   });
 })();
 </script>
