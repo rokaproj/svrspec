@@ -116,18 +116,24 @@ jobs:
           Write-Output "window title: $($p.MainWindowTitle)"
           Stop-Process -Id $p.Id -Force
 
+      - name: Portable air-gap bundle
+        run: python -m svrspec.cli bundle --out dist/svrspec-${{ steps.version.outputs.value }}-airgap.zip
+
+      # After every artefact exists, not before: the air-gap bundle used to be
+      # built after this step and so shipped without a checksum -- the one
+      # artefact whose whole purpose is being carried into a network that
+      # cannot verify it any other way.
       - name: Checksums
         shell: pwsh
         run: |
           Set-Location dist
           # sha256sum-compatible: "<digest>  <name>", which update.py parses.
-          Get-ChildItem -File | Where-Object { $_.Extension -in ".exe", ".msi" } | ForEach-Object {
+          $files = Get-ChildItem -File | Where-Object { $_.Extension -in ".exe", ".msi", ".zip" }
+          if ($files.Count -lt 3) { throw "expected setup.exe, .msi and airgap.zip, found: $($files.Name -join ', ')" }
+          $files | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content -Encoding ascii SHA256SUMS
           Get-Content SHA256SUMS
-
-      - name: Portable air-gap bundle
-        run: python -m svrspec.cli bundle --out dist/svrspec-${{ steps.version.outputs.value }}-airgap.zip
 
       - uses: actions/upload-artifact@v4
         with:
