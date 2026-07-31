@@ -37,7 +37,7 @@
       "id": "eta-bw-ddr4",
       "kind": "eta_bw",
       "key": "DDR4",
-      "value": 0.70,
+      "value": 0.7,
       "confidence": "measured",
       "source": "unverified",
       "notes": "2ch DDR4-2667, Llama-3.1-8B Q4_K_M at 6.07 tok/s on the development box. Sits inside the 0.67-0.81 band the server platforms show, so the two independent measurements agree."
@@ -51,15 +51,6 @@
       "source": "third_party_db",
       "source_url": "https://github.com/ggml-org/llama.cpp/discussions/11733",
       "notes": "Measured 0.67 / 0.77 / 0.81 across EPYC 9654, 9374F and 9175F single-socket; 0.72 is the middle of that band. Was 0.65 by estimate before the data was found -- the estimate was too pessimistic."
-    },
-    {
-      "id": "eta-bw-mrdimm",
-      "kind": "eta_bw",
-      "key": "MRDIMM",
-      "value": 0.60,
-      "confidence": "estimate",
-      "source": "unverified",
-      "notes": "No published llama.cpp figures on MRDIMM. Its doubled peak is the hardest to convert into achieved streaming bandwidth, so this stays deliberately conservative."
     },
     {
       "id": "eta-compute-avx2",

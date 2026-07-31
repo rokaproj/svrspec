@@ -100,14 +100,14 @@ jobs:
           # it just renders a page whose dropdowns never fill. A shipped build
           # once did exactly that, so check the files are on disk rather than
           # trusting that the window appeared.
-          $js = Get-ChildItem "$b\lib\webview\js" -Filter *.js -Recurse -ErrorAction SilentlyContinue
-          if (-not $js -or $js.Count -lt 4) {
-            throw "webview JS bridge is missing from the build ($($js.Count) files). Check zip_exclude_packages."
-          }
-          foreach ($need in @("api.js", "finish.js")) {
-            if (-not ($js.Name -contains $need)) { throw "webview/js/$need is missing" }
-          }
-          Write-Output "webview bridge: $($js.Count) JS files present"
+          # Ask the packaged app itself, not the file listing. Where the build
+          # PUT the files and where pywebview will LOOK for them are different
+          # questions: it globs Path(webview.__file__).parent/"js", so a module
+          # left inside library.zip resolves to a path in the archive and finds
+          # nothing. A build-time listing passes that case; selfcheck runs the
+          # real resolution inside the real install.
+          & "$b\svrspec-cli.exe" selfcheck
+          if ($LASTEXITCODE -ne 0) { throw "packaged app cannot open its own window -- see selfcheck output above" }
 
           $p = Start-Process "$b\svrspec.exe" -PassThru
           Start-Sleep -Seconds 12

@@ -242,8 +242,11 @@ def test_the_release_smoke_test_checks_the_bridge_files():
         Path(__file__).resolve().parent.parent / ".github" / "workflows" / "release.yml"
     ).read_text(encoding="utf-8")
 
-    assert "webview\\js" in workflow or "webview/js" in workflow
-    assert "api.js" in workflow and "finish.js" in workflow
+    # Asking the packaged app, not the file listing: where the build PUT the
+    # bridge and where pywebview will LOOK for it are different questions,
+    # and a listing passes the case where they disagree.
+    assert "selfcheck" in workflow
+    assert "cannot open its own window" in workflow
 
 
 def test_the_installer_runs_silently_so_an_update_is_not_a_reinstall(monkeypatch, tmp_path):

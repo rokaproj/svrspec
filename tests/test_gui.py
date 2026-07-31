@@ -290,6 +290,69 @@ def test_desktop_page_uses_the_bridge_not_a_socket():
     assert 'data-mode=\'server\'' in SERVER_HTML
 
 
+def test_a_window_whose_bridge_never_loads_rescues_itself():
+    """A dead bridge must cost a second, not the whole application.
+
+    Every cause is outside this program's reach -- a missing WebView2 runtime,
+    security software that strips the injected script, an install from before
+    the packaging fix -- and they all look identical: a window that draws and
+    does nothing. Telling the operator to go run `svrspec gui` themselves is a
+    handoff, not a fix. The same page over loopback needs no bridge at all.
+    """
+    import urllib.request
+
+    from svrspec import desktop as dt
+
+    class FakeWindow:
+        url = None
+
+        def load_url(self, u):
+            self.url = u
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(dt, "BRIDGE_GRACE_S", 0.05)
+    try:
+        api = dt.Api(Catalog(DATA))
+        api.window = FakeWindow()
+        dt._rescue_if_dead(api)
+        assert api.window.url and api.window.url.startswith("http://127.0.0.1:")
+
+        # The rescued page must come up in server mode. Reloading the window
+        # onto a page that still waits for the bridge would rescue nothing.
+        page = urllib.request.urlopen(api.window.url, timeout=10).read().decode()
+        assert "data-mode='server'" in page
+        assert json.loads(
+            urllib.request.urlopen(api.window.url + "api/catalog", timeout=10).read()
+        )["models"]
+
+        # And a window that works is left alone.
+        ok = dt.Api(Catalog(DATA))
+        ok.window = FakeWindow()
+        assert ok.bridge_ok() == "ok"
+        dt._rescue_if_dead(ok)
+        assert ok.window.url is None
+    finally:
+        monkey.undo()
+
+
+def test_the_page_tells_python_the_bridge_answered():
+    """The rescue only cancels if the page reports in, on both paths.
+
+    The `pywebviewready` event may already have fired before this script
+    attaches its listener -- that is the whole reason the polling path exists --
+    so a signal sent only from the event handler would leave a perfectly
+    healthy window getting rescued out from under the operator.
+    """
+    assert "bridgeSignal" in DESKTOP_HTML
+    assert "window.pywebview.api.bridge_ok()" in DESKTOP_HTML
+    # Fired from settle() (covers the event path) and from the early-return
+    # taken when the bridge was already up (covers the polling path).
+    assert DESKTOP_HTML.count("bridgeSignal()") >= 2
+    # The dead-bridge message must describe what the app is doing, not hand the
+    # operator a command to type.
+    assert "자동 전환" in DESKTOP_HTML
+
+
 def test_desktop_api_answers_without_a_server(monkeypatch):
     from svrspec.desktop import Api
 
@@ -1728,9 +1791,11 @@ def test_the_desktop_bridge_cannot_hang_the_window_forever():
     assert "clearInterval" in page        # and it must be torn down
     assert "reject(" in page              # a bounded wait that actually fails
 
-    # The remedy has to travel with the failure.
-    assert "서버 방식" in page
-    assert "WebView2" in page
+    # The remedy has to travel with the failure -- and the remedy is now
+    # something the app does, not something it asks the operator to go do.
+    # Naming WebView2 and a shell command was the old text: correct diagnosis,
+    # wrong owner. See test_a_window_whose_bridge_never_loads_rescues_itself.
+    assert "서버 방식으로 자동 전환" in page
 
     # The guard must check the method it is about to call, not just the object:
     # pywebview populates `window.pywebview` before the api is usable.
@@ -1779,7 +1844,11 @@ def test_the_three_tabs_are_the_ones_the_structure_asked_for():
     nav = SERVER_HTML.split('<nav class="views"')[1].split("</nav>")[0]
     assert "모델 성능" in nav
     assert "자원" in nav
-    assert "적용 사례: 관제 알람" in nav
+    # Named for what it does. It was briefly "적용 사례: 관제 알람", which named
+    # one of its four load profiles as though it were the whole screen --
+    # the screen assembles a machine and drives load at it.
+    assert "부하 테스트" in nav
+    assert "관제 알람" not in nav
     # Toggles, not links: assistive tech has to be able to read the state.
     assert nav.count("aria-pressed") == 3
 
@@ -2324,3 +2393,45 @@ def test_the_operating_system_moves_the_memory_the_grid_reports():
 
     lean, fat = low("linux-container"), low("windows-desktop")
     assert fat > lean, f"windows-desktop should need more than a container: {fat} vs {lean}"
+
+
+def test_the_tool_carries_its_own_evidence_instead_of_asking_for_a_log():
+    """It sizes servers nobody can touch, so "go measure it" is not an answer.
+
+    Asking the operator to run llama-bench on the hardware is only possible for
+    hardware they have. The whole premise here is that they do not have it yet
+    -- that is why they are sizing it. So every coefficient has to ship with
+    its own source, and the page has to show them.
+    """
+    from svrspec.gui import catalog_payload
+
+    payload = catalog_payload(Catalog(DATA))
+    ev = payload["evidence"]
+    assert ev, "예측 계수가 화면에 하나도 노출되지 않는다"
+    for row in ev:
+        assert row["kind"] and row["confidence"]
+        assert set(row) >= {"value", "source", "source_url", "notes"}
+
+    # The panel and its renderer have to exist, not just the payload.
+    assert 'id="mb-evidence"' in SERVER_HTML
+    assert "renderEvidence" in SERVER_HTML
+    assert "이 숫자들의 근거" in SERVER_HTML
+
+
+def test_the_shipped_catalogue_has_no_sourceless_rows():
+    """A row with no source is a number the reader cannot check or challenge.
+
+    They were all memory rows -- DDR4 grades and 2DPC derates -- and every one
+    of them is published platform data, so carrying them unsourced was a gap in
+    this catalogue rather than a limit on what is knowable.
+    """
+    from svrspec.catalog import Catalog as RealCatalog
+
+    left = RealCatalog().unverified()
+    assert left == [], f"출처 없는 행이 남아 있다: {left}"
+
+
+def test_the_page_does_not_send_the_operator_off_to_find_data():
+    """Handing over a research task is the tool declining to answer."""
+    assert "벤더 데이터시트로 대조" not in SERVER_HTML
+    assert "출처 없는 스펙" in SERVER_HTML

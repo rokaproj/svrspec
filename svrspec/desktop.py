@@ -13,6 +13,7 @@ this module is only a shell around it.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from . import report
@@ -30,6 +31,12 @@ from .perf import Efficiency
 from .sizing import sweep_cpus, tiers
 
 WINDOW_TITLE = "svrspec — GPU 서빙 서버 스펙 산정"
+#: How long to let the window prove its bridge works before rescuing it.
+#: Longer than the page's own 15s timeout would leave the operator staring at
+#: an error while Python is still waiting; shorter risks rescuing a window that
+#: was merely slow to start on a cold disk. The rescue is cheap and invisible
+#: when it is unnecessary, so err on the side of firing.
+BRIDGE_GRACE_S = 18.0
 #: Kept above the stylesheet's single-column breakpoint (900px) so the input
 #: rail and the results always sit side by side in the app window.
 MIN_SIZE = (1100, 760)
@@ -42,6 +49,20 @@ class Api:
     def __init__(self, catalog: Catalog | None = None) -> None:
         self._catalog = catalog or Catalog()
         self.window = None  # set once pywebview has created it
+        #: Set by `bridge_ok` the first time the page reaches Python. Until it
+        #: is set the window is, as far as we can tell, dead.
+        self.alive = threading.Event()
+
+    # -- liveness --------------------------------------------------------
+    def bridge_ok(self) -> str:
+        """The page's proof of life, and the only thing that cancels the rescue.
+
+        A window whose bridge never loads renders perfectly and does nothing --
+        no error, no exception on the Python side, nothing in a log. The only
+        way to notice is to require the page to say so.
+        """
+        self.alive.set()
+        return "ok"
 
     # -- data ------------------------------------------------------------
     def catalog(self) -> dict:
@@ -253,8 +274,34 @@ def run(catalog: Catalog | None = None, debug: bool = False) -> int:
         text_select=True,
     )
     api.window = window
+    threading.Thread(target=_rescue_if_dead, args=(api,), daemon=True).start()
     webview.start(debug=debug)
     return 0
+
+
+def _rescue_if_dead(api: Api) -> None:
+    """If the page never reached Python, reload the window onto a local server.
+
+    Every cause of a dead bridge is outside this program's control -- a missing
+    WebView2 runtime, security software that strips the injected script, an
+    install from before the packaging fix -- and all of them present the same
+    way: a window that draws and does nothing. Telling the operator to go run
+    `svrspec gui` in a terminal is not a fix, it is a handoff. The same page
+    served over loopback needs no bridge at all, so serve it.
+    """
+    if api.alive.wait(timeout=BRIDGE_GRACE_S):
+        return
+    try:
+        from .gui import serve_background
+
+        url = serve_background(api._catalog)
+    except OSError:
+        # Loopback refused too. Leave the page's own message up: it is the only
+        # thing left that can tell the operator anything.
+        return
+    window = api.window
+    if window is not None:
+        window.load_url(url)
 
 
 def main() -> int:

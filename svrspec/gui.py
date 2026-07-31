@@ -190,6 +190,24 @@ def catalog_payload(cat: Catalog) -> dict:
             }
             for p in OS_PROFILES.values()
         ],
+        # Where every prediction on every screen actually comes from. This tool
+        # sizes servers nobody can put their hands on, so "run a benchmark and
+        # send me the log" is not a path it can offer -- it has to carry its own
+        # evidence and show it. A number whose source the reader cannot see is
+        # indistinguishable from one that was made up.
+        "evidence": [
+            {
+                "id": c.id,
+                "kind": c.kind,
+                "key": c.key,
+                "value": c.value,
+                "confidence": c.confidence,
+                "source": c.source,
+                "source_url": c.source_url,
+                "notes": c.notes,
+            }
+            for c in sorted(cat.coefficients, key=lambda c: (c.kind, c.key))
+        ],
         "os_default": DEFAULT_OS_PROFILE,
         "counts": {
             "models": len(cat.models),
@@ -1718,6 +1736,24 @@ class _Handler(BaseHTTPRequestHandler):
                    {"Content-Disposition": f'attachment; filename="{stem}.html"'})
 
 
+def serve_background(catalog: Catalog | None = None) -> str:
+    """Start the same server on a loopback port nobody has to choose, and return its URL.
+
+    The desktop window's rescue path. When the pywebview bridge does not come
+    up -- a missing WebView2 runtime, security software that blocks the
+    injected script, an install that predates the fix -- the window would sit
+    there dead and tell the operator to go run a command themselves. A tool
+    that cannot open its own window should repair itself, not delegate.
+
+    Loopback and an ephemeral port on purpose: nothing is reachable from
+    another machine and no fixed port can already be taken.
+    """
+    handler = type("Handler", (_Handler,), {"catalog": catalog or Catalog()})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{httpd.server_address[1]}/"
+
+
 def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
@@ -2176,7 +2212,7 @@ def app_html(mode: str = "server") -> str:
   <nav class="views" aria-label="화면 전환">
     <button id="view-model" type="button" aria-pressed="true">모델 성능</button>
     <button id="view-size" type="button" aria-pressed="false">자원</button>
-    <button id="view-lab" type="button" aria-pressed="false">적용 사례: 관제 알람</button>
+    <button id="view-lab" type="button" aria-pressed="false">부하 테스트</button>
   </nav>
   <span class="spacer"></span>
   <button id="update" type="button" hidden></button>
@@ -2250,6 +2286,13 @@ def app_html(mode: str = "server") -> str:
         <button id="mb-run" type="button">▶ 모델 성능 측정</button>
       </div>
       <span class="hint" id="mb-run-hint">실제 모델을 돌리지 않는다 — 카탈로그의 물리와 계수로 예측한다.</span>
+    </fieldset>
+
+    <fieldset>
+      <legend>이 숫자들의 근거</legend>
+      <span class="hint">이 도구는 손에 없는 서버를 산정한다. 그래서 실측을 받아오라고
+        요구하지 않고 근거를 직접 들고 있다 — 아래가 예측에 쓰인 계수 전부다.</span>
+      <div id="mb-evidence"></div>
     </fieldset>
   </form>
 
@@ -2561,8 +2604,18 @@ def app_html(mode: str = "server") -> str:
     return !!(window.pywebview && window.pywebview.api && window.pywebview.api.catalog);
   }
 
+  // Tell Python the bridge answered. Python is waiting on this: if the signal
+  // never arrives it starts a loopback server and reloads this window onto it,
+  // so a dead bridge costs the operator a second instead of the whole app. Both
+  // the event path and the polling path go through here, because the event is
+  // exactly the thing that may already have fired.
+  function bridgeSignal(){
+    try { window.pywebview.api.bridge_ok(); } catch(e){}
+  }
+
   function bridgeReady(){
-    if(!DESKTOP || bridgeUp()) return Promise.resolve();
+    if(!DESKTOP) return Promise.resolve();
+    if(bridgeUp()){ bridgeSignal(); return Promise.resolve(); }
     return new Promise(function(resolve, reject){
       var done = false, timer = null;
       function settle(ok){
@@ -2570,11 +2623,14 @@ def app_html(mode: str = "server") -> str:
         done = true;
         if(timer) clearInterval(timer);
         window.removeEventListener("pywebviewready", onReady);
-        if(ok) resolve();
+        if(ok){ bridgeSignal(); resolve(); }
+        // Python is already switching this window over to a loopback server by
+        // the time this fires -- it stopped waiting before we did. Say what is
+        // happening rather than handing the operator a command to type.
         else reject(new Error(
           "데스크톱 브리지가 " + (BRIDGE_TIMEOUT_MS / 1000) + "초 안에 준비되지 않았다. " +
-          "창을 닫고 다시 열어라. 계속 같으면 WebView2 런타임을 확인하거나 " +
-          "서버 방식(svrspec gui)으로 실행해라."));
+          "서버 방식으로 자동 전환하는 중이다 — 잠시 기다려라. " +
+          "화면이 그대로면 창을 닫고 다시 열어라."));
       }
       function onReady(){ settle(true); }
       window.addEventListener("pywebviewready", onReady, {once:true});
@@ -3716,11 +3772,15 @@ def app_html(mode: str = "server") -> str:
       d.warnings.forEach(function(w){ ul.appendChild(el("li", "", w)); });
       results.appendChild(section("주의사항", "", ul));
     }
+    // Only speak up when a row really has no source behind it. Sending the
+    // operator off to collect vendor datasheets is not a caveat, it is the
+    // tool declining to answer -- and this tool exists to size servers nobody
+    // has access to, so "go measure it" is never an available answer.
     if(d.unverified.length){
       var n = el("div", "note");
-      n.appendChild(el("strong", "", "미확인 스펙 " + d.unverified.length + "건. "));
+      n.appendChild(el("strong", "", "출처 없는 스펙 " + d.unverified.length + "건. "));
       n.appendChild(document.createTextNode(
-        "납품 문서로 확정하기 전에 벤더 데이터시트로 대조해야 한다: " +
+        "아래 수치는 그만큼 넓게 읽어야 한다: " +
         d.unverified.slice(0, 14).map(function(u){ return u.kind + ":" + u.id; }).join(", ") +
         (d.unverified.length > 14 ? " 외 " + (d.unverified.length - 14) + "건" : "")));
       results.appendChild(n);
@@ -4597,8 +4657,9 @@ def app_html(mode: str = "server") -> str:
 
   // Three screens now, one nav. "모델 성능" is the default because it answers the
   // question the other two build on: how fast is this model on this machine at
-  // all. The alarm pipeline is one application of that answer, so it moved
-  // behind "적용 사례" instead of being the front door.
+  // all. The third screen assembles a machine and drives load at it -- it was
+  // briefly labelled "적용 사례: 관제 알람", which described one of its four load
+  // profiles as though it were the whole screen. It is a load test.
   var VIEWS = ["model", "size", "lab"];
   function setView(which){
     if(VIEWS.indexOf(which) < 0) which = "model";
@@ -4693,6 +4754,50 @@ def app_html(mode: str = "server") -> str:
                                      headers:{"Content-Type":"application/json"},
                                      body: JSON.stringify(p)})
       .then(function(r){ return r.json(); });
+  }
+
+  var CONF_LABEL = {measured: "실측", derived: "실측유도", estimate: "추정"};
+  var SOURCE_LABEL = {
+    third_party_db: "공개 벤치마크",
+    vendor_datasheet: "벤더 데이터시트",
+    model_card: "모델 카드",
+    unverified: "출처 없음"
+  };
+
+  // Every coefficient the engine uses, with its confidence and a link to where
+  // it came from. The point is not decoration: a tool that predicts for
+  // hardware nobody can touch has to be auditable in place, because the reader
+  // has no way to check it against the machine.
+  function renderEvidence(){
+    var host = byId("mb-evidence");
+    if(!host) return;
+    host.textContent = "";
+    var rows = (catalog && catalog.evidence) || [];
+    if(!rows.length){ host.appendChild(el("p", "hint", "계수 정보 없음.")); return; }
+
+    var weakest = rows.filter(function(r){ return r.confidence === "estimate"; }).length;
+    host.appendChild(el("p", "hint",
+      rows.length + "개 계수 · 추정 " + weakest + "개. 추정이 섞인 만큼이 오차 범위로 나간다."));
+
+    var ul = el("ul", "notes");
+    rows.forEach(function(r){
+      var li = el("li", "");
+      li.appendChild(el("strong", "", r.kind + (r.key && r.key !== "*" ? " · " + r.key : "")));
+      li.appendChild(document.createTextNode(
+        " = " + r.value + "  [" + (CONF_LABEL[r.confidence] || r.confidence) + " / " +
+        (SOURCE_LABEL[r.source] || r.source) + "]"));
+      if(r.source_url){
+        li.appendChild(document.createTextNode(" "));
+        var a = el("a", "", "출처");
+        a.href = r.source_url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        li.appendChild(a);
+      }
+      if(r.notes) li.appendChild(el("div", "detail", r.notes));
+      ul.appendChild(li);
+    });
+    host.appendChild(ul);
   }
 
   function mbParams(){
@@ -5088,8 +5193,7 @@ def app_html(mode: str = "server") -> str:
     card.appendChild(el("div", "label", "모델 성능"));
     card.appendChild(el("p", "prose",
       "이 서버에 이 모델을 올리면 실제로 어떤 성능이 나오는지를 낸다 — 추론 처리량, " +
-      "동시 사용자, 연산 자원 분해, 학습 가능 여부. 관제 알람은 이 성능을 쓰는 하나의 " +
-      "적용 사례이고, 이 화면은 그 아래의 질문에 먼저 답한다. 실제 모델이나 벤치마크를 " +
+      "동시 사용자, 연산 자원 분해, 학습 가능 여부. 실제 모델이나 벤치마크를 " +
       "돌리지 않는다: 카탈로그의 물리와 계수로 예측한다."));
     if(d && fresh && !d.blocked){
       card.appendChild(el("p", "cpu", d.model_name + " · " + d.quant_id));
@@ -5225,6 +5329,7 @@ def app_html(mode: str = "server") -> str:
     fillSelect(byId("mb-cpu"), (catalog.cpus || []).map(function(c){
       return [c.id, c.label + " · " + c.cores + "C " + c.mem_channels + "ch " + c.ddr_gen];
     }));
+    renderEvidence();
     fillSelect(byId("mb-os"), (catalog.os_profiles || []).map(function(o){
       return [o.id, o.label + " · 상주 " + o.runtime_gb + "GB" +
                     (o.hard_limit ? " · 초과 시 OOM" : "")];

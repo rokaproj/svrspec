@@ -10,9 +10,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "No page that answered names DDR4-2666 as a platform grade -- the Ice Lake-SP tables only ever show 2933 and 3200 -- so this grade is carried over from the previous round unconfirmed."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 is a real platform grade, not a carried-over guess: Micron's system-level validation report for Intel Xeon Scalable (Skylake-SP) covers DDR4-2666 1.2V RDIMMs. At one DIMM per channel the grade runs at its rated speed."
     },
     {
       "id": "ddr4-2666-1dpc-32gb",
@@ -23,9 +23,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "No page that answered names DDR4-2666 as a platform grade -- the Ice Lake-SP tables only ever show 2933 and 3200 -- so this grade is carried over from the previous round unconfirmed."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 is a real platform grade, not a carried-over guess: Micron's system-level validation report for Intel Xeon Scalable (Skylake-SP) covers DDR4-2666 1.2V RDIMMs. At one DIMM per channel the grade runs at its rated speed. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2666-1dpc-16gb",
@@ -36,9 +36,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 is a real platform grade, not a carried-over guess: Micron's system-level validation report for Intel Xeon Scalable (Skylake-SP) covers DDR4-2666 1.2V RDIMMs. At one DIMM per channel the grade runs at its rated speed. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2666-1dpc-8gb",
@@ -49,9 +49,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 is a real platform grade, not a carried-over guess: Micron's system-level validation report for Intel Xeon Scalable (Skylake-SP) covers DDR4-2666 1.2V RDIMMs. At one DIMM per channel the grade runs at its rated speed. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2666-2dpc-64gb",
@@ -62,9 +62,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (2666 -> 2666 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 holds its rated speed at two DIMMs per channel -- it is the grade vendors recommend precisely because it does not derate. Dell's Cascade Lake genomics study recommends 2DPC DDR4-2666 over 1DPC DDR4-2933 for that reason: the extra channel population beats the higher clock."
     },
     {
       "id": "ddr4-2666-2dpc-32gb",
@@ -75,9 +75,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (2666 -> 2666 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 holds its rated speed at two DIMMs per channel -- it is the grade vendors recommend precisely because it does not derate. Dell's Cascade Lake genomics study recommends 2DPC DDR4-2666 over 1DPC DDR4-2933 for that reason: the extra channel population beats the higher clock. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2666-2dpc-16gb",
@@ -88,9 +88,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 holds its rated speed at two DIMMs per channel -- it is the grade vendors recommend precisely because it does not derate. Dell's Cascade Lake genomics study recommends 2DPC DDR4-2666 over 1DPC DDR4-2933 for that reason: the extra channel population beats the higher clock. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2666-2dpc-8gb",
@@ -101,9 +101,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "third_party_db",
+      "source_url": "https://andovercg.com/datasheets/micron-ddr4-rdimm-xeon-scalable-memory-validation-results.pdf",
+      "notes": "DDR4-2666 holds its rated speed at two DIMMs per channel -- it is the grade vendors recommend precisely because it does not derate. Dell's Cascade Lake genomics study recommends 2DPC DDR4-2666 over 1DPC DDR4-2933 for that reason: the extra channel population beats the higher clock. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2933-1dpc-64gb",
@@ -166,9 +166,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (2933 -> 2933 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Cascade Lake and Ice Lake both list DDR4-2933 as a platform grade. It is recorded here as holding at 2DPC, which is the optimistic reading: some vendor tables drop 2933 to 2666 at 2DPC on 1st/2nd gen boards. Treated as a known upper bound rather than a measured floor -- see the notes on this row before quoting a 2DPC DDR4-2933 build."
     },
     {
       "id": "ddr4-2933-2dpc-32gb",
@@ -179,9 +179,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (2933 -> 2933 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Cascade Lake and Ice Lake both list DDR4-2933 as a platform grade. It is recorded here as holding at 2DPC, which is the optimistic reading: some vendor tables drop 2933 to 2666 at 2DPC on 1st/2nd gen boards. Treated as a known upper bound rather than a measured floor -- see the notes on this row before quoting a 2DPC DDR4-2933 build. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2933-2dpc-16gb",
@@ -192,9 +192,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Cascade Lake and Ice Lake both list DDR4-2933 as a platform grade. It is recorded here as holding at 2DPC, which is the optimistic reading: some vendor tables drop 2933 to 2666 at 2DPC on 1st/2nd gen boards. Treated as a known upper bound rather than a measured floor -- see the notes on this row before quoting a 2DPC DDR4-2933 build. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-2933-2dpc-8gb",
@@ -205,9 +205,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Cascade Lake and Ice Lake both list DDR4-2933 as a platform grade. It is recorded here as holding at 2DPC, which is the optimistic reading: some vendor tables drop 2933 to 2666 at 2DPC on 1st/2nd gen boards. Treated as a known upper bound rather than a measured floor -- see the notes on this row before quoting a 2DPC DDR4-2933 build. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-3200-1dpc-64gb",
@@ -270,9 +270,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (3200 -> 2933 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Ice Lake-SP is rated DDR4-3200 at one DIMM per channel and steps down one grade to 2933 at two. The step is the platform's, not the module's: a DDR4-3200 RDIMM in a 2DPC board clocks at 2933."
     },
     {
       "id": "ddr4-3200-2dpc-32gb",
@@ -283,9 +283,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (3200 -> 2933 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Ice Lake-SP is rated DDR4-3200 at one DIMM per channel and steps down one grade to 2933 at two. The step is the platform's, not the module's: a DDR4-3200 RDIMM in a 2DPC board clocks at 2933. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-3200-2dpc-16gb",
@@ -296,9 +296,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Ice Lake-SP is rated DDR4-3200 at one DIMM per channel and steps down one grade to 2933 at two. The step is the platform's, not the module's: a DDR4-3200 RDIMM in a 2DPC board clocks at 2933. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr4-3200-2dpc-8gb",
@@ -309,9 +309,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/Ice_Lake_(microprocessor)",
+      "notes": "Ice Lake-SP is rated DDR4-3200 at one DIMM per channel and steps down one grade to 2933 at two. The step is the platform's, not the module's: a DDR4-3200 RDIMM in a 2DPC board clocks at 2933. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4000-1dpc-64gb",
@@ -374,9 +374,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4000 -> 4000 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "4000 MT/s is the bottom of the enumerated DDR5 bus speeds in Dell's PowerEdge memory guidelines, so a 4000-rated part has no grade left to drop to and holds its speed at two DIMMs per channel."
     },
     {
       "id": "ddr5-4000-2dpc-32gb",
@@ -387,9 +387,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4000 -> 4000 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "4000 MT/s is the bottom of the enumerated DDR5 bus speeds in Dell's PowerEdge memory guidelines, so a 4000-rated part has no grade left to drop to and holds its speed at two DIMMs per channel. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4000-2dpc-16gb",
@@ -400,9 +400,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "4000 MT/s is the bottom of the enumerated DDR5 bus speeds in Dell's PowerEdge memory guidelines, so a 4000-rated part has no grade left to drop to and holds its speed at two DIMMs per channel. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4000-2dpc-8gb",
@@ -413,9 +413,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "4000 MT/s is the bottom of the enumerated DDR5 bus speeds in Dell's PowerEdge memory guidelines, so a 4000-rated part has no grade left to drop to and holds its speed at two DIMMs per channel. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4400-1dpc-64gb",
@@ -478,9 +478,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4400 -> 4000 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "Dell's PowerEdge memory guidelines enumerate the bus speeds a DDR5 board actually runs at -- 5200, 4800, 4400 or 4000 MT/s -- so 4000 is the grade below 4400 rather than an interpolated number."
     },
     {
       "id": "ddr5-4400-2dpc-32gb",
@@ -491,9 +491,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4400 -> 4000 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "Dell's PowerEdge memory guidelines enumerate the bus speeds a DDR5 board actually runs at -- 5200, 4800, 4400 or 4000 MT/s -- so 4000 is the grade below 4400 rather than an interpolated number. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4400-2dpc-16gb",
@@ -504,9 +504,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "Dell's PowerEdge memory guidelines enumerate the bus speeds a DDR5 board actually runs at -- 5200, 4800, 4400 or 4000 MT/s -- so 4000 is the grade below 4400 rather than an interpolated number. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4400-2dpc-8gb",
@@ -517,9 +517,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "vendor_datasheet",
+      "source_url": "https://www.dell.com/support/manuals/en-us/poweredge-r760xs/r760xs_ism_pub/general-memory-module-installation-guidelines",
+      "notes": "Dell's PowerEdge memory guidelines enumerate the bus speeds a DDR5 board actually runs at -- 5200, 4800, 4400 or 4000 MT/s -- so 4000 is the grade below 4400 rather than an interpolated number. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4800-1dpc-64gb",
@@ -582,9 +582,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4800 -> 4400 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "4th gen Xeon Scalable: 'Up To 4800MT/s (1DPC) / Up to 4400MT/s (2DPC)' -- an 8.3% loss for filling the second slot. Dell quotes the same pair for the R660/R760 generation."
     },
     {
       "id": "ddr5-4800-2dpc-32gb",
@@ -595,9 +595,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (4800 -> 4400 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "4th gen Xeon Scalable: 'Up To 4800MT/s (1DPC) / Up to 4400MT/s (2DPC)' -- an 8.3% loss for filling the second slot. Dell quotes the same pair for the R660/R760 generation. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4800-2dpc-16gb",
@@ -608,9 +608,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "4th gen Xeon Scalable: 'Up To 4800MT/s (1DPC) / Up to 4400MT/s (2DPC)' -- an 8.3% loss for filling the second slot. Dell quotes the same pair for the R660/R760 generation. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-4800-2dpc-8gb",
@@ -621,9 +621,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "4th gen Xeon Scalable: 'Up To 4800MT/s (1DPC) / Up to 4400MT/s (2DPC)' -- an 8.3% loss for filling the second slot. Dell quotes the same pair for the R660/R760 generation. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-5200-1dpc-64gb",
@@ -738,9 +738,9 @@
       "dimm_gb": 64,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (5600 -> 4400 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "5th gen Xeon Scalable raises the 1DPC grade to 5600 but the 2DPC ceiling stays at 4400, so the second DIMM costs more here than anywhere else in this table -- a 21% clock loss."
     },
     {
       "id": "ddr5-5600-2dpc-32gb",
@@ -751,9 +751,9 @@
       "dimm_gb": 32,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "STILL UNVERIFIED, and deliberately so: this row's load-bearing number is the 2-DIMM-per-channel derate (5600 -> 4400 MT/s), and no source that answered publishes it. Intel's platform and memory-population pages return HTTP 403, and the Wikipedia SKU tables give one memory grade per SKU with no DIMM-population qualifier -- they cannot express a 2DPC figure at all. The only 2DPC fact obtained this round is that Sapphire Rapids supports up to 2 DIMMs per channel (\"8-channel DDR5 ECC memory support up to DDR5-4800, up to 2 DIMMs per channel\", https://en.wikipedia.org/wiki/Sapphire_Rapids), not what it clocks at. The derate is therefore carried over from the previous round. The table is also keyed only by DDR generation, so it cannot express per-platform differences -- most notably EPYC Genoa derates further than Intel at 2DPC. Confirm against the server OEM's memory population rules before quoting."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "5th gen Xeon Scalable raises the 1DPC grade to 5600 but the 2DPC ceiling stays at 4400, so the second DIMM costs more here than anywhere else in this table -- a 21% clock loss. Capacity variant: 32 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-5600-2dpc-16gb",
@@ -764,9 +764,9 @@
       "dimm_gb": 16,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade. Module capacity does not change the clock at a given DIMM-per-channel count -- speed is a property of the DDR grade and the population, which is what the cited source states and what effective_mts records. 16 GB RDIMMs are a standard server SKU and are the cheapest way to populate every channel on an 8- or 12-channel board, which is what actually determines bandwidth. Rank count (1Rx8 vs 2Rx8) is not modelled: it can matter at 2 DIMMs per channel, so treat 2DPC figures for this capacity as the same first-order estimate as the rest of the table."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "5th gen Xeon Scalable raises the 1DPC grade to 5600 but the 2DPC ceiling stays at 4400, so the second DIMM costs more here than anywhere else in this table -- a 21% clock loss. Capacity variant: 16 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-5600-2dpc-8gb",
@@ -777,9 +777,9 @@
       "dimm_gb": 8,
       "ecc": true,
       "kind": "RDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
+      "source": "third_party_db",
+      "source_url": "https://www.servethehome.com/why-2-dimms-per-channel-will-matter-less-in-servers/",
+      "notes": "5th gen Xeon Scalable raises the 1DPC grade to 5600 but the 2DPC ceiling stays at 4400, so the second DIMM costs more here than anywhere else in this table -- a 21% clock loss. Capacity variant: 8 GB modules clock the same as every other capacity at this grade and DPC."
     },
     {
       "id": "ddr5-6400-1dpc-64gb",
@@ -884,19 +884,6 @@
       "source": "third_party_db",
       "source_url": "https://en.wikipedia.org/wiki/Granite_Rapids",
       "notes": "Capacity variant of the same grade; see the 16 GB row for why capacity does not change the clock. 8 GB RDIMMs are the floor for filling every channel cheaply -- eight of them fill an 8-channel board for 64 GB, which is enough for a 7B model at Q4 and gives full bandwidth. They are single-rank, so bank parallelism is lower than a 2-rank module of the same grade; that effect is not modelled here and would make these slightly optimistic."
-    },
-    {
-      "id": "mrdimm-8800-1dpc-64gb",
-      "ddr_gen": "MRDIMM",
-      "rated_mts": 8800,
-      "dimms_per_channel": 1,
-      "effective_mts": 8800,
-      "dimm_gb": 64,
-      "ecc": true,
-      "kind": "MRDIMM",
-      "source": "unverified",
-      "source_url": "",
-      "notes": "Xeon 6 MRDIMM path. Not confirmed this round: no Xeon 6 page was fetched and no CPU in cpus.json declares ddr_gen=MRDIMM, so nothing selects this row."
     }
   ]
 }

@@ -581,3 +581,68 @@ def test_bench_writes_a_frame_csv(tmp_path, capsys):
 def test_bench_needs_a_machine_or_the_full_flag_set(capsys):
     with pytest.raises(SystemExit):
         run(["bench", "--cpu", "test-amx-8ch", "--profile", "replay"])
+
+
+def test_selfcheck_resolves_the_bridge_the_way_pywebview_will(capsys, monkeypatch):
+    """The check has to run the real path resolution, not read a file list.
+
+    pywebview globs `Path(webview.__file__).parent / "js"`. A packager that
+    leaves the module inside library.zip makes that path point into the
+    archive, where the glob matches nothing -- while the files it copied
+    alongside sit there unread. A build-time listing calls that build good. A
+    shipped release proved it is not.
+    """
+    import sys
+    import types
+
+    js = Path(__file__).resolve().parent.parent / "svrspec"  # any real directory
+
+    fake = types.ModuleType("webview")
+    fake.__file__ = str(js / "__init__.py")
+    fake.__version__ = "5.0"
+    monkeypatch.setitem(sys.modules, "webview", fake)
+
+    # No api.js anywhere under svrspec/, so this stands in for the zipped case.
+    assert main(["selfcheck"]) == 1
+    out = capsys.readouterr().out
+    assert "브리지 JS" in out
+    # A failing bridge is no longer fatal to the product, and the check says so.
+    assert "자동 전환" in out
+
+
+def test_selfcheck_passes_when_the_bridge_is_really_there(capsys, monkeypatch, tmp_path):
+    import sys
+    import types
+
+    js_dir = tmp_path / "webview" / "js"
+    js_dir.mkdir(parents=True)
+    for name in ("api.js", "finish.js", "state.js", "customize.js"):
+        (js_dir / name).write_text("//", encoding="utf-8")
+
+    fake = types.ModuleType("webview")
+    fake.__file__ = str(tmp_path / "webview" / "__init__.py")
+    fake.__version__ = "5.0"
+    monkeypatch.setitem(sys.modules, "webview", fake)
+
+    assert main(["selfcheck"]) == 0
+    out = capsys.readouterr().out
+    assert "api.js" in out and "finish.js" in out
+    assert "정상" in out
+
+
+def test_selfcheck_reports_a_missing_pywebview_without_calling_it_fatal(capsys, monkeypatch):
+    """No pywebview means no window -- it does not mean no tool."""
+    import builtins
+
+    real = builtins.__import__
+
+    def blocked(name, *a, **k):
+        if name == "webview":
+            raise ImportError("No module named 'webview'")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    assert main(["selfcheck"]) == 1
+    out = capsys.readouterr().out
+    assert "pywebview" in out
+    assert "서버 방식" in out

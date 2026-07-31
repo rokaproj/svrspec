@@ -284,6 +284,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ctv.set_defaults(handler=_cmd_catalog_validate)
     ct.set_defaults(handler=_cmd_catalog_validate)
 
+    # selfcheck -------------------------------------------------------------
+    sc = sub.add_parser(
+        "selfcheck",
+        help="이 설치본이 데스크톱 창을 띄울 수 있는지 검사 (아무것도 실행하지 않는다)")
+    sc.set_defaults(handler=_cmd_selfcheck)
+
     # bundle ---------------------------------------------------------------
     bd = sub.add_parser("bundle", help="에어갭 서버 반입용 zip 생성")
     bd.add_argument("--out", type=Path, default=Path("svrspec-bundle.zip"))
@@ -1556,6 +1562,60 @@ def _cmd_catalog_validate(args) -> int:
     moe = [m.id for m in cat.models if m.active_params_b]
     print(f"MoE {len(moe)}개" + (f": {', '.join(moe)}" if moe else ""))
     return 0 if not unmatched else 1
+
+
+def _cmd_selfcheck(args) -> int:
+    """Can this install open its own window? Answered from inside the install.
+
+    Checking that `webview/js/api.js` exists at the path the build *put* it is
+    not the same question as whether pywebview will *find* it: pywebview globs
+    `Path(webview.__file__).parent / "js"`, and if the packager left the module
+    inside library.zip that path points into the archive and matches nothing.
+    A shipped build failed exactly there, and a build-time file listing passed
+    it. So resolve the directory the way pywebview does, in the environment
+    that will actually run it.
+    """
+    from . import __version__
+
+    print(f"svrspec {__version__}")
+    print(f"  실행 방식: {'패키징된 앱' if getattr(sys, 'frozen', False) else '소스'}")
+
+    ok = True
+    try:
+        import webview
+    except ImportError as exc:
+        print(f"  pywebview: 없음 ({exc}) — 데스크톱 창을 띄울 수 없다")
+        print("  서버 방식(svrspec gui)은 영향받지 않는다")
+        return 1
+
+    print(f"  pywebview: {getattr(webview, '__version__', '버전 불명')}")
+    js_dir = Path(webview.__file__).parent / "js"
+    found = sorted(p.name for p in js_dir.rglob("*.js"))
+    print(f"  브리지 JS 경로: {js_dir}")
+    if not found:
+        print("  브리지 JS: 하나도 없음 — 창은 열리지만 아무것도 동작하지 않는다")
+        ok = False
+    else:
+        missing = {"api.js", "finish.js"} - set(found)
+        print(f"  브리지 JS: {len(found)}개 {found}")
+        if missing:
+            print(f"  빠진 파일: {sorted(missing)} — 브리지가 뜨지 않는다")
+            ok = False
+
+    try:
+        cat = Catalog()
+        print(f"  카탈로그: 모델 {len(cat.models)} · CPU {len(cat.cpus)} · "
+              f"메모리 {len(cat.memory)} · 계수 {len(cat.coefficients)}")
+    except CatalogError as exc:
+        print(f"  카탈로그: 읽기 실패 ({exc})")
+        ok = False
+
+    if ok:
+        print("\n정상 — 데스크톱 창이 뜬다.")
+    else:
+        print("\n문제 있음. 다만 창이 죽어도 앱은 로컬 서버로 자동 전환한다 — "
+              "쓰지 못하게 되지는 않는다.")
+    return 0 if ok else 1
 
 
 def _cmd_bundle(args) -> int:
