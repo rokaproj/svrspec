@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import report
 from .catalog import Catalog, CatalogError
-from .memory import kv_bytes_per_token
+from .memory import DEFAULT_OS_PROFILE, OS_PROFILES, kv_bytes_per_token
 from .perf import Efficiency, widest_isa
 from .sizing import sweep_cpus, tiers
 from .theme import stylesheet
@@ -176,6 +176,21 @@ def catalog_payload(cat: Catalog) -> dict:
             }
             for c in sorted(cat.cpus, key=lambda c: (c.vendor, -c.mem_channels, c.model))
         ],
+        # The operating system is a sizing input, not a footnote: its resident
+        # set and the slack it wants move the memory answer by gigabytes, and
+        # whether overrunning it swaps or kills changes how much slack to buy.
+        # The page cannot offer that choice unless it knows the list.
+        "os_profiles": [
+            {
+                "id": p.id,
+                "label": p.label,
+                "runtime_gb": _r(p.runtime_gb, 2),
+                "headroom": _r(p.headroom, 2),
+                "hard_limit": bool(p.hard_limit),
+            }
+            for p in OS_PROFILES.values()
+        ],
+        "os_default": DEFAULT_OS_PROFILE,
         "counts": {
             "models": len(cat.models),
             "cpus": len(cat.cpus),
@@ -2108,6 +2123,11 @@ main[hidden]{display:none}
 /* The grid's first column is a row label, not a number, so it does not get the
    tabular alignment the measurements do. */
 .mb-grid td:first-child,.mb-grid th:first-child{font-weight:600}
+/* A cell whose operating point does not fit the assembled machine. The
+   colour is the semantic error token, and the mark carries the meaning
+   on its own so it survives a monochrome print or a colour deficiency. */
+.mb-nofit{color:var(--error)}
+.mb-nofit-mark{font-weight:700}
 .mb-verdict{display:flex; flex-wrap:wrap; align-items:baseline;
   gap:var(--s1) var(--s2); margin-top:var(--s2); font-size:var(--fs-md)}
 .mb-verdict .num{font-variant-numeric:tabular-nums; font-size:var(--fs-sm);
@@ -2203,6 +2223,10 @@ def app_html(mode: str = "server") -> str:
           <label for="mb-dimm-count">DIMM 개수</label>
           <input type="number" id="mb-dimm-count" min="0" max="64" value="8">
         </div>
+      </div>
+      <div class="field">
+        <label for="mb-os">운영체제</label>
+        <select id="mb-os"></select>
       </div>
       <span class="hint" id="mb-hw-hint"></span>
     </fieldset>
@@ -4643,7 +4667,13 @@ def app_html(mode: str = "server") -> str:
     ["decode_tps_single", MB_GEN, "tok/s"],
     ["decode_tps_total", MB_TOTAL, "tok/s"],
     ["ttft_s", MB_TTFT, "초"],
-    ["prefill_tps", "프롬프트 처리(Prefill tok/s)", "tok/s"]
+    ["prefill_tps", "프롬프트 처리(Prefill tok/s)", "tok/s"],
+    // RAM belongs in this list because it is the axis that decides whether a
+    // cell can run at all. llama.cpp reserves the whole context per slot, so
+    // the bottom-right of this grid can want ten times the top-left, and a
+    // reader picking an operating point off the speed columns needs to see
+    // which ones the machine cannot actually load.
+    ["ram_gb", "필요 메모리(RAM)", "GB"]
   ];
   var MB_UNIT = "tok/s";
   var mbState = {key: null, data: null, error: null, busy: false,
@@ -4680,6 +4710,7 @@ def app_html(mode: str = "server") -> str:
     // cache the assembly reports. Two would drift.
     p.output_tokens = labNum("mb-output-tokens", 256);
     p.train_samples = labNum("mb-train-samples", 10000);
+    p.os_name = labVal("mb-os");
     p.name = "M";
     delete p.volumes; delete p.only_pass;
     return p;
@@ -4796,7 +4827,17 @@ def app_html(mode: str = "server") -> str:
       tr.appendChild(el("td", "", b + " 시퀀스"));
       (d.contexts || []).forEach(function(c, i){
         var row = mbAt(d, b, c);
-        tr.appendChild(el("td", "num", mbCell(row, mbState.metric)));
+        // A cell the machine cannot load is marked wherever the reader is
+        // looking, not only on the RAM view: somebody picking an operating
+        // point off the speed columns is exactly who needs to be told.
+        var td = el("td", "num" + (row && row.fits === false ? " mb-nofit" : ""),
+                    mbCell(row, mbState.metric));
+        if(row && row.fits === false){
+          td.title = "이 구성은 장착 메모리에 들어가지 않는다 (필요 " +
+                     fmtNum(num(row.ram_gb)) + " GB)";
+          td.appendChild(el("span", "mb-nofit-mark", " ✕"));
+        }
+        tr.appendChild(td);
         if(!i && row){
           // TTFT is a prefill number, so it reads the prefill ceiling.
           bound = (mbState.metric === "prefill_tps" || mbState.metric === "ttft_s")
@@ -5063,6 +5104,19 @@ def app_html(mode: str = "server") -> str:
       card.appendChild(el("p", "hint",
         "추론 시 실사용 " + fmtNum(num(d.memory_gb)) + " GB · 예측 오차 ±" +
         fmtNum(num(d.uncertainty)) + "% · 생성 " + d.output_tokens + " 토큰 기준"));
+      // Which OS the memory figures assumed, and what happens if they are
+      // exceeded. A memory number that hides its operating system is not a
+      // number, and "swaps" and "is killed" are not the same warning.
+      if(d.os){
+        var os = el("p", "hint-row",
+          "메모리 기준 OS: " + d.os.label + " (상주 " + fmtNum(num(d.os.runtime_gb)) +
+          " GB · 여유 " + fmtNum(num(d.os.headroom)) + "배)" +
+          (d.os.chosen ? "" : " — 기본값이다"));
+        card.appendChild(os);
+        card.appendChild(el("p", "hint-row" + (d.os.hard_limit ? " v-fail" : ""),
+          d.os.overrun));
+        card.appendChild(el("p", "hint-row", d.os.note));
+      }
     }
     if(mbState.error){
       card.appendChild(el("div", "note", "모델 성능 측정 실패: " + mbState.error));
@@ -5171,6 +5225,11 @@ def app_html(mode: str = "server") -> str:
     fillSelect(byId("mb-cpu"), (catalog.cpus || []).map(function(c){
       return [c.id, c.label + " · " + c.cores + "C " + c.mem_channels + "ch " + c.ddr_gen];
     }));
+    fillSelect(byId("mb-os"), (catalog.os_profiles || []).map(function(o){
+      return [o.id, o.label + " · 상주 " + o.runtime_gb + "GB" +
+                    (o.hard_limit ? " · 초과 시 OOM" : "")];
+    }));
+    if(catalog.os_default) byId("mb-os").value = catalog.os_default;
     byId("mb-model").value = byId("model").value;
     byId("mb-quant").value = byId("quant").value;
     // Open on the widest memory bus, same reasoning as the lab: it is the part

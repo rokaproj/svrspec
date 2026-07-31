@@ -2072,9 +2072,16 @@ def test_the_felt_numbers_are_labelled_in_both_languages():
     # Every metric the grid can draw is a (engine key, 한국어(원어), unit) triple,
     # so a raw field name cannot reach a column header by accident.
     block = SERVER_HTML.split("var MB_METRICS = [")[1].split("\n  ];")[0]
-    for key in ("decode_tps_single", "decode_tps_total", "ttft_s", "prefill_tps"):
+    keys = ("decode_tps_single", "decode_tps_total", "ttft_s", "prefill_tps",
+            # RAM is a grid metric too: it is the axis that decides whether a
+            # cell can run at all, so it has to be selectable next to the
+            # speeds rather than living only in the summary.
+            "ram_gb")
+    for key in keys:
         assert key in block, key
-    assert block.count("[") == 4
+    # One bracket per triple: a raw field name cannot reach a column header by
+    # accident, and an untriplet entry would not balance.
+    assert block.count("[") == len(keys)
 
 
 def test_generation_speed_is_never_quoted_as_the_server_total():
@@ -2232,3 +2239,88 @@ def test_the_os_profile_is_selectable_and_changes_the_memory():
     # An unknown name falls back instead of failing the run.
     unknown = _mb(Catalog(DATA), request, {**axes, "os_name": "plan9"})
     assert unknown["os_name"] is None
+
+
+def test_the_grid_shows_which_cells_cannot_run_not_just_the_payload():
+    """Adding a field to the payload is not the same as showing it.
+
+    `ram_gb` and `fits` were in the response before anything drew them, which
+    is worse than not having them: the data says the bottom-right corner will
+    not load and the screen still invites you to pick it.
+    """
+    # Selectable as a metric...
+    assert '"필요 메모리(RAM)"' in SERVER_HTML
+
+    # ...and marked in place, on every metric view, not only the RAM one.
+    assert "mb-nofit" in SERVER_HTML
+    assert "row.fits === false" in SERVER_HTML
+    assert "장착 메모리에 들어가지 않는다" in SERVER_HTML
+
+    # The mark carries the meaning without colour, for print and for readers
+    # who cannot rely on it.
+    assert "mb-nofit-mark" in SERVER_HTML
+    assert "var(--error)" in SERVER_HTML
+
+
+def test_the_operating_system_assumption_is_visible_where_the_memory_is():
+    """A memory figure that hides which OS it assumed is not a figure."""
+    payload = _mb(
+        Catalog(DATA),
+        {**BASE_REQUEST, "model": "test-8b-gqa", "cpu": "test-amx-8ch",
+         "dimm_gb": 64, "dimm_count": 8},
+        {"batches": [1], "contexts": [4096], "os_name": "linux-container"},
+    )
+    block = payload["os"]
+    assert block["label"] and block["note"]
+    assert block["hard_limit"] is True
+    assert "OOM" in block["overrun"]
+    assert block["chosen"] is True
+
+    # An unchosen profile still reports what it fell back to.
+    default = _mb(
+        Catalog(DATA),
+        {**BASE_REQUEST, "model": "test-8b-gqa", "cpu": "test-amx-8ch",
+         "dimm_gb": 64, "dimm_count": 8},
+        {"batches": [1], "contexts": [4096]},
+    )
+    assert default["os"]["chosen"] is False
+    assert default["os"]["label"]
+
+
+def test_the_operator_can_actually_choose_the_operating_system():
+    """The engine sizing per OS is worthless if the screen cannot ask for one.
+
+    The payload accepted `os_name` for a release before any control sent it, so
+    every reading silently used the default. Three things have to line up: the
+    catalogue offers the list, the markup has the control, and the request
+    carries the choice.
+    """
+    from svrspec.gui import catalog_payload
+    from svrspec.memory import OS_PROFILES
+
+    cat = catalog_payload(Catalog(DATA))
+    assert [p["id"] for p in cat["os_profiles"]] == list(OS_PROFILES)
+    assert cat["os_default"] in OS_PROFILES
+    # The list has to carry what distinguishes the profiles, not just names --
+    # a container that gets OOM-killed is a different purchase decision.
+    assert any(p["hard_limit"] for p in cat["os_profiles"])
+    assert all(p["runtime_gb"] > 0 for p in cat["os_profiles"])
+
+    assert 'id="mb-os"' in SERVER_HTML
+    assert 'p.os_name = labVal("mb-os")' in SERVER_HTML
+    assert 'fillSelect(byId("mb-os")' in SERVER_HTML
+
+
+def test_the_operating_system_moves_the_memory_the_grid_reports():
+    """Choosing an OS has to change the numbers, or the control is decoration."""
+    def low(os_name):
+        payload = _mb(
+            Catalog(DATA),
+            {**BASE_REQUEST, "model": "test-8b-gqa", "cpu": "test-amx-8ch",
+             "dimm_gb": 64, "dimm_count": 8},
+            {"batches": [1], "contexts": [4096], "os_name": os_name},
+        )
+        return payload["throughput"][0]["ram_gb"]
+
+    lean, fat = low("linux-container"), low("windows-desktop")
+    assert fat > lean, f"windows-desktop should need more than a container: {fat} vs {lean}"
