@@ -8,6 +8,8 @@ module against ground truth rather than trusting it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .types import MemoryBreakdown, ModelSpec, QuantSpec, TokenProfile
 
 GB = 1024**3
@@ -24,6 +26,8 @@ DEFAULT_UBATCH = 512
 ACTIVATION_TENSORS = 14.0
 
 #: Base OS + llama.cpp runtime residency, before any model data.
+#: Kept as the default so every existing caller behaves exactly as before; the
+#: per-OS figures live in `OS_PROFILES` and are opt-in.
 RUNTIME_OS_GB = 2.5
 
 #: Applied to the computed subtotal. Covers allocator slack, page cache the
@@ -35,6 +39,82 @@ DEFAULT_HEADROOM = 1.5
 #: Capacities you can actually populate with sane DIMM counts.
 PROVISIONABLE_GB = (16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048)
 
+
+@dataclass(frozen=True)
+class OsProfile:
+    """What the operating system costs before the model is loaded.
+
+    The same server does not offer the same memory to llama.cpp on every OS,
+    and sizing that ignores it under-provisions the box that needs the most.
+    Two effects, both real and both modelled here as one number each:
+
+      `runtime_gb`   resident before any model data -- kernel, services, the
+                     desktop shell where there is one.
+      `headroom`     how much slack the allocator and page cache want on top
+                     of the working set. A kernel that keeps an mmap'd model in
+                     page cache needs room for it.
+
+    These are estimates. Nothing in this project has measured a Windows Server
+    idle footprint, and the numbers below are ordinary operator experience
+    rather than a datasheet. `note` says so, and it travels with the sizing.
+    """
+
+    id: str
+    label: str
+    runtime_gb: float
+    headroom: float
+    note: str
+
+
+#: Ordered cheapest-first, which is also the order an operator should prefer:
+#: an inference box has no reason to carry a desktop.
+OS_PROFILES: dict[str, OsProfile] = {
+    "linux-headless": OsProfile(
+        id="linux-headless",
+        label="Linux 서버 (GUI 없음)",
+        runtime_gb=1.0,
+        headroom=1.4,
+        note="커널·systemd·sshd 정도만 상주한다고 본 값이다. 배포판과 설치 옵션에 따라 달라진다",
+    ),
+    "linux-container": OsProfile(
+        id="linux-container",
+        label="Linux 컨테이너",
+        runtime_gb=0.6,
+        headroom=1.35,
+        note=(
+            "컨테이너는 호스트 커널을 공유하므로 이미지 안의 상주분만 센다. "
+            "다만 cgroup 메모리 상한을 넘으면 스왑이 아니라 OOM kill이라 여유가 더 중요하다"
+        ),
+    ),
+    "windows-server": OsProfile(
+        id="windows-server",
+        label="Windows Server",
+        runtime_gb=2.5,
+        headroom=1.5,
+        note="이 프로젝트의 기존 기본값이다. Windows Server 2022 유휴 상주분을 기준으로 잡았다",
+    ),
+    "windows-desktop": OsProfile(
+        id="windows-desktop",
+        label="Windows 데스크톱",
+        runtime_gb=4.0,
+        headroom=1.6,
+        note=(
+            "셸·검색 색인·백신이 함께 도는 사무용 PC 기준이다. "
+            "서버 산정에 쓸 값은 아니고, 개발자 노트북에서 미리 돌려보는 경우를 위한 것이다"
+        ),
+    ),
+}
+
+#: The profile assumed when a caller does not choose one. Windows Server,
+#: because that is what the packaged app installs onto and because it is the
+#: most expensive of the server profiles -- defaulting to the cheapest would
+#: quietly under-size every build that did not think about it.
+DEFAULT_OS_PROFILE = "windows-server"
+
+
+def os_profile(name: str | None) -> OsProfile:
+    """Look up a profile by id, falling back to the default."""
+    return OS_PROFILES.get(name or DEFAULT_OS_PROFILE, OS_PROFILES[DEFAULT_OS_PROFILE])
 
 def weight_bytes(model: ModelSpec, quant: QuantSpec, measured_bpw: float | None = None) -> float:
     """File-resident weight bytes. All of it is read per generated token."""
@@ -92,25 +172,36 @@ def size_memory(
     slots: int = 1,
     ctx_tokens: int | None = None,
     kv_bits: int = 16,
-    headroom: float = DEFAULT_HEADROOM,
+    headroom: float | None = None,
     measured_bpw: float | None = None,
     flash_attention: bool = True,
+    os_name: str | None = None,
 ) -> MemoryBreakdown:
-    """Full RAM requirement for one (model, quant, concurrency) deployment."""
+    """Full RAM requirement for one (model, quant, concurrency) deployment.
+
+    `os_name` picks an `OS_PROFILES` entry, which supplies both the resident
+    cost of the operating system and the slack its allocator wants. An explicit
+    `headroom` still wins, so callers that had tuned it keep their value.
+    """
+    profile = os_profile(os_name)
+    if headroom is None:
+        headroom = profile.headroom if os_name else DEFAULT_HEADROOM
+    runtime_gb = profile.runtime_gb if os_name else RUNTIME_OS_GB
+
     ctx = ctx_tokens if ctx_tokens else _rounded_ctx(tokens.peak_ctx_tokens)
 
     weights = weight_bytes(model, quant, measured_bpw)
     kv = kv_cache_bytes(model, ctx, slots, kv_bits)
     compute = compute_buffer_bytes(model, slots, flash_attention=flash_attention)
 
-    subtotal_gb = (weights + kv + compute) / GB + RUNTIME_OS_GB
+    subtotal_gb = (weights + kv + compute) / GB + runtime_gb
     recommended = subtotal_gb * headroom
 
     return MemoryBreakdown(
         weights_gb=weights / GB,
         kv_cache_gb=kv / GB,
         compute_buffer_gb=compute / GB,
-        runtime_os_gb=RUNTIME_OS_GB,
+        runtime_os_gb=runtime_gb,
         subtotal_gb=subtotal_gb,
         headroom_factor=headroom,
         recommended_gb=recommended,

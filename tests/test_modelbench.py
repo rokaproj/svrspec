@@ -612,3 +612,69 @@ def test_the_throughput_csv_exports_both(bench):
     header = to_csv(bench, "throughput").splitlines()[0]
     assert "ttft_s" in header
     assert "gen_tps" in header
+
+
+def test_ram_moves_across_the_grid_instead_of_being_one_number(bench):
+    """A single memory figure for the whole grid hid a tenfold range.
+
+    llama.cpp reserves the full context per slot up front, so batch 32 at 16k
+    context wants an order of magnitude more RAM than batch 1 at 512. Reporting
+    one number let a reader size the box from the summary and then find the
+    bottom-right of the table would not load.
+    """
+    rams = [p.ram_gb for p in bench.throughput]
+    assert min(rams) > 0
+    assert max(rams) > min(rams) * 5, rams
+
+    # Monotone in both axes: more sequences and longer contexts cost more.
+    by_key = {(p.batch, p.ctx_tokens): p.ram_gb for p in bench.throughput}
+    batches = sorted({p.batch for p in bench.throughput})
+    contexts = sorted({p.ctx_tokens for p in bench.throughput})
+    for ctx in contexts:
+        series = [by_key[(b, ctx)] for b in batches]
+        assert series == sorted(series), (ctx, series)
+    for batch in batches:
+        series = [by_key[(batch, c)] for c in contexts]
+        assert series == sorted(series), (batch, series)
+
+
+def test_a_point_that_does_not_fit_is_marked(catalog):
+    """The grid must say which of its own cells the machine cannot run."""
+    from svrspec.lab import VirtualMachine, assemble
+    from svrspec.modelbench import bench_model
+
+    # 8 x 8GB fills every channel but is only 64GB.
+    asm = assemble(catalog, VirtualMachine(
+        name="t", cpu_id="test-amx-8ch", sockets=1, dimm_gb=8, dimm_count=8,
+        model_id="test-8b-gqa", quant_id="Q4_K_M", slots=4,
+    ))
+    bench = bench_model(asm, contexts=(512, 32768), batches=(1, 32))
+
+    assert any(p.fits for p in bench.throughput), "something must fit"
+    tight = max(bench.throughput, key=lambda p: p.ram_gb)
+    assert tight.ram_gb > asm.ram_total_gb
+    assert tight.fits is False
+
+
+def test_the_os_changes_what_is_left_for_the_model(catalog):
+    """Windows does not hand llama.cpp the same memory Linux does."""
+    from svrspec.lab import VirtualMachine, assemble
+    from svrspec.memory import OS_PROFILES
+    from svrspec.modelbench import bench_model
+
+    vm = VirtualMachine(
+        name="t", cpu_id="test-amx-8ch", sockets=1, dimm_gb=64, dimm_count=8,
+        model_id="test-8b-gqa", quant_id="Q4_K_M", slots=4,
+    )
+    asm = assemble(catalog, vm)
+    lean = bench_model(asm, os_name="linux-container", contexts=(4096,), batches=(1,))
+    fat = bench_model(asm, os_name="windows-desktop", contexts=(4096,), batches=(1,))
+
+    assert lean.throughput[0].ram_gb < fat.throughput[0].ram_gb
+    gap = fat.throughput[0].ram_gb - lean.throughput[0].ram_gb
+    expected = (OS_PROFILES["windows-desktop"].runtime_gb
+                - OS_PROFILES["linux-container"].runtime_gb)
+    assert gap == pytest.approx(expected, rel=1e-6)
+
+    # Throughput is a property of the silicon, not of the OS.
+    assert lean.throughput[0].gen_tps == pytest.approx(fat.throughput[0].gen_tps)

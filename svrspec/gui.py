@@ -1295,6 +1295,12 @@ def _throughput_row(pt) -> dict:
         "decode_bound": decode,
         "prefill_bound_label": MB_BOUND_LABEL.get(prefill, prefill),
         "decode_bound_label": MB_BOUND_LABEL.get(decode, decode),
+        # RAM belongs on the row, not only in the summary: llama.cpp reserves
+        # the full context per slot, so the bottom-right of this grid can want
+        # ten times what the top-left does. A cell the machine cannot load has
+        # to say so where it is read.
+        "ram_gb": _r(getattr(pt, "ram_gb", None), 2),
+        "fits": bool(getattr(pt, "fits", True)),
     }
 
 

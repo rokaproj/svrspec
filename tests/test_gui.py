@@ -2148,3 +2148,30 @@ def test_every_grid_row_carries_a_ttft(cat, engines):
     first = [r for r in d["throughput"] if r["batch"] == 1]
     waits = [r["ttft_s"] for r in sorted(first, key=lambda r: r["ctx_tokens"])]
     assert waits == sorted(waits)
+
+
+def test_the_grid_reports_ram_per_row_not_just_once():
+    """One memory figure for the whole grid hid a tenfold range.
+
+    A reader who sized the box from the summary would find the bottom-right of
+    the table would not load, so each row carries what it actually needs and
+    whether the assembled machine has it.
+    """
+    # 8 x 8GB fills every channel of this board but is only 64 GB, so the
+    # default grid's heaviest corners genuinely do not load on it.
+    payload = _mb(
+        Catalog(DATA),
+        {**BASE_REQUEST, "model": "test-8b-gqa", "cpu": "test-amx-8ch",
+         "dimm_gb": 8, "dimm_count": 8},
+    )
+    rows = payload["throughput"]
+    assert rows
+
+    for row in rows:
+        assert row["ram_gb"] is not None and row["ram_gb"] > 0
+        assert isinstance(row["fits"], bool)
+
+    rams = [r["ram_gb"] for r in rows]
+    assert max(rams) > min(rams), rams
+    # The heaviest cell on a 64 GB board is the one that must be flagged.
+    assert any(r["fits"] is False for r in rows), rams

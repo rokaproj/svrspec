@@ -1,5 +1,7 @@
 """Memory model. These are the numbers that can be checked exactly."""
 
+import pytest
+
 from svrspec.memory import (
     compute_buffer_bytes,
     kv_bytes_per_token,
@@ -103,3 +105,58 @@ def test_context_is_rounded_to_a_deployable_setting(model_8b, q4):
     assert tokens.peak_ctx_tokens == 1200
     b = size_memory(model_8b, q4, tokens, slots=1)
     assert b.kv_cache_gb == kv_cache_bytes(model_8b, 2048, 1) / GB
+
+
+def test_os_profiles_change_the_sizing_and_say_they_are_estimates(model_8b, q4):
+    """The same box does not offer the same memory on every OS.
+
+    Sizing that ignores this under-provisions whichever machine carries the
+    most operating system, and the range here is a whole DIMM's worth.
+    """
+    from svrspec.memory import OS_PROFILES, size_memory
+    from svrspec.types import TokenProfile
+
+    tokens = TokenProfile()
+    sized = {
+        name: size_memory(model_8b, q4, tokens, slots=4, os_name=name)
+        for name in OS_PROFILES
+    }
+
+    assert sized["linux-container"].subtotal_gb < sized["linux-headless"].subtotal_gb
+    assert sized["linux-headless"].subtotal_gb < sized["windows-server"].subtotal_gb
+    assert sized["windows-server"].subtotal_gb < sized["windows-desktop"].subtotal_gb
+
+    # Only the OS term moves; the model's own demand is identical.
+    for name, breakdown in sized.items():
+        assert breakdown.runtime_os_gb == OS_PROFILES[name].runtime_gb
+        assert breakdown.weights_gb == pytest.approx(sized["windows-server"].weights_gb)
+        assert breakdown.kv_cache_gb == pytest.approx(sized["windows-server"].kv_cache_gb)
+
+    # Every profile has to admit what it is.
+    for profile in OS_PROFILES.values():
+        assert profile.note.strip()
+        assert profile.label.strip()
+
+
+def test_choosing_no_os_keeps_the_previous_behaviour_exactly(model_8b, q4):
+    """The parameter is additive: every existing caller is untouched."""
+    from svrspec.memory import DEFAULT_HEADROOM, RUNTIME_OS_GB, size_memory
+    from svrspec.types import TokenProfile
+
+    tokens = TokenProfile()
+    before = size_memory(model_8b, q4, tokens, slots=4)
+    assert before.runtime_os_gb == RUNTIME_OS_GB
+    assert before.headroom_factor == DEFAULT_HEADROOM
+
+    # An explicit headroom still wins over the profile's.
+    forced = size_memory(model_8b, q4, tokens, slots=4,
+                         os_name="linux-container", headroom=2.0)
+    assert forced.headroom_factor == 2.0
+
+
+def test_an_unknown_os_falls_back_rather_than_raising():
+    """A typo in a dropdown must not take down a sizing run."""
+    from svrspec.memory import DEFAULT_OS_PROFILE, os_profile
+
+    assert os_profile("no-such-os").id == DEFAULT_OS_PROFILE
+    assert os_profile(None).id == DEFAULT_OS_PROFILE

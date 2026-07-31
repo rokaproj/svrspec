@@ -174,6 +174,14 @@ class ThroughputPoint:
     #: Time to first token: how long the prompt takes before anything appears.
     #: `ctx_tokens / prefill_tps`, with the prefix cache off -- see `notes`.
     ttft_s: float = 0.0
+    #: RAM this operating point actually needs, and whether the assembled
+    #: machine has it. Reporting one figure for the whole grid hid a tenfold
+    #: range: llama.cpp reserves the full context per slot up front, so batch
+    #: 32 at 16k context wants an order of magnitude more than batch 1 at 512.
+    #: A reader who sized the box from the summary would find the bottom-right
+    #: of this table would not load.
+    ram_gb: float = 0.0
+    fits: bool = True
     #: The same number as `decode_tps_single`, under the name the industry uses
     #: for it. Not redundancy: a screen that says "Generation tok/s" while the
     #: engine says `decode_tps_single` makes every reader translate, and the
@@ -256,6 +264,7 @@ def bench_model(
     output_tokens: int = DEFAULT_OUTPUT_TOKENS,
     train_samples: int = 10_000,
     eff: Efficiency | None = None,
+    os_name: str | None = None,
 ) -> ModelBench:
     """Benchmark an assembled build against its model, analytically.
 
@@ -287,6 +296,10 @@ def bench_model(
     channels_arg = _channels_per_socket(populated, sockets, channels_total)
 
     warnings: list[str] = []
+    # Resolved before the grid, not after it: `fits` answers "would this
+    # operating point load on the machine as assembled", and the grid is where
+    # that question gets asked.
+    available_gb = _available_ram_gb(asm, cpu, sockets)
 
     def predict(ctx_tokens: int, slots: int):
         pred = perf.predict_throughput(
@@ -305,6 +318,10 @@ def bench_model(
             pred = predict(ctx, batch)
             total = pred.decode_tps_aggregate
             per_sequence = total / batch if batch else 0.0
+            point_ram = size_memory(
+                model, quant, _profile(ctx, output_tokens), slots=batch,
+                os_name=os_name,
+            ).subtotal_gb
             throughput.append(ThroughputPoint(
                 batch=batch,
                 ctx_tokens=ctx,
@@ -316,6 +333,8 @@ def bench_model(
                 decode_bound=pred.decode_bound_by,
                 ttft_s=(ctx / pred.prefill_tps) if pred.prefill_tps else 0.0,
                 gen_tps=per_sequence,
+                ram_gb=point_ram,
+                fits=(available_gb is None or point_ram <= available_gb),
             ))
 
     # --- concurrency ----------------------------------------------------
@@ -345,7 +364,6 @@ def bench_model(
     resources = _resource_splits(model, quant, cpu, eff, ref_pred, ref_batch, ref_ctx)
 
     # --- training -------------------------------------------------------
-    available_gb = _available_ram_gb(asm, cpu, sockets)
     flops_achievable = _achievable_flops(cpu, eff, sockets)
     training = [
         _training_verdict(kind, model, quant, available_gb, flops_achievable,
@@ -357,6 +375,7 @@ def bench_model(
     ram = size_memory(
         model, quant, _profile(max(contexts), output_tokens),
         slots=1, ctx_tokens=max(contexts),
+        os_name=os_name,
     )
     uncertainty = max(ref_pred.uncertainty, float(getattr(asm, "uncertainty", 0.0) or 0.0))
 
