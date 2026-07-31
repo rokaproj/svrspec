@@ -1831,9 +1831,11 @@ def _mb(cat, request, raw=None):
 
 def test_the_default_view_is_model_performance():
     """Not the alarm screen. That was the whole point of the rework."""
-    assert '<main id="model">' in SERVER_HTML
-    assert '<main id="size" hidden>' in SERVER_HTML
-    assert '<main id="lab" hidden>' in SERVER_HTML
+    # Prefixed: "model" belonged to the LLM <select> first, and sharing it
+    # silently broke the whole page. See test_no_two_elements_share_an_id.
+    assert '<main id="screen-model">' in SERVER_HTML
+    assert '<main id="screen-size" hidden>' in SERVER_HTML
+    assert '<main id="screen-lab" hidden>' in SERVER_HTML
     assert '<button id="view-model" type="button" aria-pressed="true">모델 성능' in SERVER_HTML
     for other in ("view-size", "view-lab"):
         assert re.search(rf'id="{other}"[^>]*aria-pressed="false"', SERVER_HTML), other
@@ -1856,14 +1858,14 @@ def test_the_three_tabs_are_the_ones_the_structure_asked_for():
 def test_nothing_that_already_existed_disappeared():
     """Rehoused, not removed. Every earlier screen still has to be reachable."""
     for marker in (
-        '<main id="size"',            # sizing: tiers, candidate table, downloads
+        '<main id="screen-size"',     # sizing: tiers, candidate table, downloads
         "권장 스펙",
         "CPU 후보",
         "토큰 전달 시뮬레이터",
         "작업관리자",
         "개수별 리소스",
         "과부하 지점",
-        '<main id="lab"',             # the virtual lab and its alarm load bench
+        '<main id="screen-lab"',      # the virtual lab and its load profiles
         "가상 서버 조립",
         "부하 테스트",
         "효율 계수",
@@ -2435,3 +2437,41 @@ def test_the_page_does_not_send_the_operator_off_to_find_data():
     """Handing over a research task is the tool declining to answer."""
     assert "벤더 데이터시트로 대조" not in SERVER_HTML
     assert "출처 없는 스펙" in SERVER_HTML
+
+
+def test_no_two_elements_share_an_id():
+    """A duplicate id fails silently and looks like the whole page broke.
+
+    `<main id="model">` and `<select id="model">` both existed, so
+    getElementById("model") returned the <main> -- the boot code poured 32
+    <optgroup>s into the screen container, the LLM dropdown stayed empty, and
+    the option groups rendered as loose text over the layout. Nothing threw.
+    Reported as "항목별 UI 전부 깨지고 정상작동 안함", which is exactly right.
+    """
+    import collections
+    import re
+
+    for mode in ("server", "desktop"):
+        ids = re.findall(r"""\sid=["']([^"']+)["']""", app_html(mode))
+        dupes = {i: n for i, n in collections.Counter(ids).items() if n > 1}
+        assert not dupes, f"{mode}: 중복 id {dupes}"
+
+
+def test_every_id_the_script_looks_up_actually_exists():
+    """Renaming a container must not leave the code reaching for the old name."""
+    import re
+
+    page = SERVER_HTML
+    present = set(re.findall(r"""\sid=["']([^"']+)["']""", page))
+    # Ids built by string concatenation ("view-" + v, "screen-" + v) are not
+    # literals, so check the pieces the loop can produce.
+    for v in ("model", "size", "lab"):
+        assert f"screen-{v}" in present, f"screen-{v} 가 없다"
+        assert f"view-{v}" in present, f"view-{v} 가 없다"
+
+
+def test_the_model_dropdown_groups_are_named_not_keyed():
+    """`sub-2B` is a catalogue key; a dropdown needs a caption."""
+    assert "SIZE_CLASS_LABEL" in SERVER_HTML
+    assert "2B 미만" in SERVER_HTML
+    assert "70B 이상" in SERVER_HTML

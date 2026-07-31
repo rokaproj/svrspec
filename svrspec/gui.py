@@ -2219,7 +2219,7 @@ def app_html(mode: str = "server") -> str:
   <button id="theme" type="button" aria-label="화면 테마 전환">테마: 자동</button>
 </header>
 
-<main id="model">
+<main id="screen-model">
   <form id="mb-rail" aria-label="모델 성능 조건">
     <fieldset>
       <legend>모델</legend>
@@ -2301,7 +2301,7 @@ def app_html(mode: str = "server") -> str:
   </div>
 </main>
 
-<main id="size" hidden>
+<main id="screen-size" hidden>
   <form id="rail" aria-label="산정 조건">
     <fieldset>
       <legend>모델</legend>
@@ -2419,7 +2419,7 @@ def app_html(mode: str = "server") -> str:
   </div>
 </main>
 
-<main id="lab" hidden>
+<main id="screen-lab" hidden>
   <form id="lab-rail" aria-label="가상 서버 조립">
     <fieldset>
       <legend>머신</legend>
@@ -4660,11 +4660,18 @@ def app_html(mode: str = "server") -> str:
   // all. The third screen assembles a machine and drives load at it -- it was
   // briefly labelled "적용 사례: 관제 알람", which described one of its four load
   // profiles as though it were the whole screen. It is a load test.
+  // Screen containers are prefixed because "model" was already taken by the
+  // LLM <select>. Two elements shared that id, so getElementById("model")
+  // returned the <main> and the boot code poured 32 <optgroup>s into it --
+  // the dropdown stayed empty and the option groups rendered as loose text
+  // across the screen. Duplicate ids fail silently and look like everything
+  // broke at once, which is exactly how it was reported.
   var VIEWS = ["model", "size", "lab"];
+  function screenOf(v){ return byId("screen-" + v); }
   function setView(which){
     if(VIEWS.indexOf(which) < 0) which = "model";
     VIEWS.forEach(function(v){
-      byId(v).hidden = (v !== which);
+      screenOf(v).hidden = (v !== which);
       byId("view-" + v).setAttribute("aria-pressed", String(v === which));
     });
     // Each screen owns an animation; leaving it must stop it, or a hidden
@@ -4755,6 +4762,17 @@ def app_html(mode: str = "server") -> str:
                                      body: JSON.stringify(p)})
       .then(function(r){ return r.json(); });
   }
+
+  // The catalogue's size classes are keys, not captions. "sub-2B" sitting in a
+  // Korean dropdown reads as an untranslated string, so name the buckets.
+  var SIZE_CLASS_LABEL = {
+    "sub-2B": "2B 미만",
+    "2-5B": "2–5B",
+    "7-9B": "7–9B",
+    "13-15B": "13–15B",
+    "30-35B": "30–35B",
+    "70B+": "70B 이상"
+  };
 
   var CONF_LABEL = {measured: "실측", derived: "실측유도", estimate: "추정"};
   var SOURCE_LABEL = {
@@ -5431,7 +5449,7 @@ def app_html(mode: str = "server") -> str:
     c.models.forEach(function(m){
       if(!groups[m.size_class]){
         groups[m.size_class] = document.createElement("optgroup");
-        groups[m.size_class].label = m.size_class;
+        groups[m.size_class].label = SIZE_CLASS_LABEL[m.size_class] || m.size_class;
         sel.appendChild(groups[m.size_class]);
       }
       var o = document.createElement("option");
