@@ -244,3 +244,101 @@ def test_the_release_smoke_test_checks_the_bridge_files():
 
     assert "webview\\js" in workflow or "webview/js" in workflow
     assert "api.js" in workflow and "finish.js" in workflow
+
+
+def test_the_installer_runs_silently_so_an_update_is_not_a_reinstall(monkeypatch, tmp_path):
+    """Pressing the update button must not open a setup wizard.
+
+    The user already consented by pressing it. Making them agree to a licence
+    page and re-pick a destination they chose once is friction, not consent.
+    Silent plus Restart Manager is what turns "run an installer" into "the
+    window closes and comes back updated".
+    """
+    from svrspec import update
+
+    installer = tmp_path / "svrspec-9.9.9-setup.exe"
+    installer.write_bytes(b"MZ")
+
+    seen: dict = {}
+
+    class _Popen:
+        def __init__(self, args, **kwargs):
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(update.os, "name", "nt")
+    monkeypatch.setattr("subprocess.Popen", _Popen)
+    update.launch_installer(installer)
+
+    assert seen["args"][0] == str(installer)
+    switches = seen["args"][1:]
+    for required in ("/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"):
+        assert required in switches, switches
+    # An app update may never reboot the machine.
+    assert "/NORESTART" in switches
+    # Detached: the installer is about to close this very process.
+    assert seen["kwargs"].get("close_fds") is True
+
+
+def test_the_wizard_is_still_reachable_when_silent_is_refused(monkeypatch, tmp_path):
+    """Somebody debugging a failed silent install needs to see the wizard."""
+    from svrspec import update
+
+    installer = tmp_path / "setup.exe"
+    installer.write_bytes(b"MZ")
+    opened: list = []
+
+    monkeypatch.setattr(update.os, "name", "nt")
+    monkeypatch.setattr(update.os, "startfile", opened.append, raising=False)
+    update.launch_installer(installer, silent=False)
+    assert opened == [str(installer)]
+
+
+def test_the_installer_declares_it_can_be_closed_and_restarted():
+    """The switches only work if Setup was built to honour Restart Manager."""
+    from pathlib import Path
+
+    iss = (
+        Path(__file__).resolve().parent.parent / "installer" / "svrspec.iss"
+    ).read_text(encoding="utf-8")
+
+    assert "CloseApplications=yes" in iss
+    assert "RestartApplications=yes" in iss
+    assert "AlwaysRestart=no" in iss
+
+
+def test_a_silent_launch_failure_is_reported_not_swallowed(monkeypatch, tmp_path):
+    from svrspec import update
+
+    installer = tmp_path / "setup.exe"
+    installer.write_bytes(b"MZ")
+
+    def _boom(*args, **kwargs):
+        raise OSError("access denied")
+
+    monkeypatch.setattr(update.os, "name", "nt")
+    monkeypatch.setattr("subprocess.Popen", _boom)
+    with pytest.raises(update.UpdateError, match="실행할 수 없다"):
+        update.launch_installer(installer)
+
+
+def test_the_build_copies_the_webview_js_and_refuses_to_ship_without_it():
+    """Unzipping the package is necessary but not sufficient.
+
+    cx_Freeze copies modules, not the data files sitting beside them, so
+    `webview/js/*.js` has to be named in `include_files` the same way the
+    catalogue is. And because a build missing them fails *silently* -- the
+    window opens and simply never fills in -- the build must refuse rather
+    than produce that installer.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "installer" / "setup_cxfreeze.py"
+    ).read_text(encoding="utf-8")
+
+    assert "_webview_js_dir()" in source
+    assert '"lib/webview/js"' in source
+    # The guard, not just the copy.
+    assert "raise SystemExit" in source
+    assert "api.js" in source and "finish.js" in source

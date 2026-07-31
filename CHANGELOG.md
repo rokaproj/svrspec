@@ -3,6 +3,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따르고,
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따른다.
 
+## [0.2.3] — 2026-07-31
+
+### 수정 — 브리지 JS가 빌드에 아예 복사되지 않던 문제 (0.2.2 보완)
+
+0.2.2에서 `webview`를 zip 밖으로 뺐지만 그것만으로는 부족했다. **cx_Freeze는 패키지의
+모듈을 복사하지 `js/*.js` 같은 데이터 파일을 가져가지 않는다.** 카탈로그 JSON을
+`include_files`로 명시하는 것과 같은 이유로 pywebview의 JS도 명시해야 한다.
+
+- `webview/js` 를 `include_files` 에 추가했다
+- **JS가 없으면 빌드를 거부한다.** 이 결함은 조용히 실패하는 성질이라 — 창은 열리고
+  페이지도 그려지고 다만 영영 채워지지 않는다 — 산출물이 나온 뒤에 알아채면 늦다.
+  `api.js`·`finish.js`가 없으면 `SystemExit`으로 빌드를 멈춘다
+
+### 변경 — 업데이트가 재설치가 아니라 업데이트처럼 동작한다
+
+이전에도 버튼 한 번으로 받아서 설치까지 갔지만, 설치 마법사가 뜨고 라이선스와
+설치 경로를 다시 확인해야 했고 끝나면 앱을 손으로 다시 켜야 했다.
+
+- **마법사 없이 조용히 설치한다.** `/SILENT /SUPPRESSMSGBOXES /NORESTART
+  /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS`로 실행한다. 사용자는 버튼을 누르며
+  이미 동의했고, 한 번 고른 설치 경로를 다시 고르게 하는 것은 동의가 아니라 마찰이다
+- **창이 닫혔다가 새 버전으로 다시 열린다.** Restart Manager가 실행 중인 앱을 닫고
+  파일을 교체한 뒤 다시 띄운다. `.iss`에 `CloseApplications`·`RestartApplications`를
+  켰다 — 이게 없으면 실행 중인 .exe를 덮어쓸 수 없어 설치가 실패하거나 재부팅으로 미뤄진다
+- **앱 업데이트로 Windows를 재부팅하지 않는다**(`/NORESTART`, `AlwaysRestart=no`)
+- 마법사 경로는 `launch_installer(path, silent=False)`로 남겨 뒀다 — 조용한 설치가
+  실패했을 때 원인을 보려면 필요하다
+
 ## [0.2.2] — 2026-07-31
 
 ### 수정 — 데스크톱 앱의 브리지가 아예 뜨지 않던 근본 원인

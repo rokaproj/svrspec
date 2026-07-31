@@ -29,6 +29,32 @@ from svrspec import __version__  # noqa: E402
 
 ICON = ROOT / "installer" / "svrspec.ico"
 
+
+def _webview_js_dir() -> Path:
+    """Where pywebview keeps the JavaScript it injects into the window.
+
+    `webview.util.load_js_files` finds this with `glob(js_dir/**/*.js)` at
+    runtime, reading real files off the filesystem. If those files are not in
+    the build, the glob matches nothing, `api.js` never runs,
+    `window.pywebview` is never created and `pywebviewready` never fires -- and
+    the failure is silent: the import succeeds, the window opens, and the page
+    renders. It just never fills in, because the bridge it talks through does
+    not exist. A shipped release did exactly that.
+
+    Fail the build rather than produce that installer again.
+    """
+    import webview
+
+    js_dir = Path(webview.__file__).parent / "js"
+    found = sorted(p.name for p in js_dir.rglob("*.js"))
+    missing = {"api.js", "finish.js"} - set(found)
+    if missing:
+        raise SystemExit(
+            f"pywebview's JS bridge is incomplete at {js_dir}: missing {sorted(missing)}. "
+            f"Found {found}. Refusing to build an app whose window cannot talk to Python."
+        )
+    return js_dir
+
 #: Stable across releases: Windows uses it to recognise an upgrade rather than
 #: installing a second copy side by side. Never regenerate this.
 UPGRADE_CODE = "{6F2A9C31-4D8B-4E5A-9C77-3B1E0A5D8F42}"
@@ -45,6 +71,11 @@ build_exe_options = {
     "include_files": [
         (str(ROOT / "svrspec" / "catalog"), "lib/svrspec/catalog"),
         (str(ROOT / "README.md"), "README.md"),
+        # pywebview's bridge is data, not code, and cx_Freeze copies modules --
+        # not the .js files sitting beside them. Keeping the package unzipped
+        # (below) is necessary but not sufficient: the files have to be put
+        # there. See `_webview_js_dir` for why this is fatal when it is missing.
+        (str(_webview_js_dir()), "lib/webview/js"),
     ],
     # Both of these must stay unzipped, and for the same reason: they read their
     # own data files off the filesystem.

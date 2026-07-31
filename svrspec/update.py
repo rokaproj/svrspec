@@ -187,11 +187,59 @@ def download(
     return target
 
 
-def launch_installer(path: Path) -> None:
-    """Hand the verified installer to Windows and let this process exit."""
+#: Inno Setup switches that turn "run an installer" into "apply an update".
+#:
+#:   /SILENT                 progress only, no wizard to click through
+#:   /SUPPRESSMSGBOXES       no prompts behind a window that is about to close
+#:   /NORESTART              never reboot the machine over an app update
+#:   /CLOSEAPPLICATIONS      let it replace files this process is holding open
+#:   /RESTARTAPPLICATIONS    and reopen the app afterwards
+#:
+#: The last two are what make it feel like an update rather than a reinstall:
+#: the window closes, a progress bar runs, the window comes back on the new
+#: version. Without them Windows cannot overwrite the running .exe and the
+#: install fails or defers.
+SILENT_SWITCHES = (
+    "/SILENT",
+    "/SUPPRESSMSGBOXES",
+    "/NORESTART",
+    "/CLOSEAPPLICATIONS",
+    "/RESTARTAPPLICATIONS",
+)
+
+
+def launch_installer(path: Path, silent: bool = True) -> None:
+    """Hand the verified installer to Windows and let this process exit.
+
+    Silent by default. The user already consented by pressing the update
+    button, and making them agree to a licence page and a destination folder
+    they chose once already is not consent, it is friction.
+
+    `silent=False` falls back to the ordinary wizard -- worth keeping for the
+    case where a silent install fails and somebody needs to see why.
+    """
     if os.name != "nt":
         raise UpdateError(f"이 설치 파일은 Windows 전용이다: {path}")
-    os.startfile(str(path))  # noqa: S606 - a verified installer, by design
+    if not silent:
+        os.startfile(str(path))  # noqa: S606 - a verified installer, by design
+        return
+
+    # ShellExecute cannot pass arguments, so the silent path needs a real spawn.
+    # Detached, because this process is about to be closed by the installer
+    # itself and must not be waited on.
+    import subprocess  # noqa: PLC0415 - only needed on this branch
+
+    creation = 0
+    for flag in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        creation |= getattr(subprocess, flag, 0)
+    try:
+        subprocess.Popen(  # noqa: S603 - a hash-verified installer, by design
+            [str(path), *SILENT_SWITCHES],
+            close_fds=True,
+            creationflags=creation,
+        )
+    except OSError as exc:
+        raise UpdateError(f"설치 프로그램을 실행할 수 없다: {exc}") from exc
 
 
 def describe(release: Release | None) -> str:

@@ -7,7 +7,7 @@
 ;   ISCC.exe installer\svrspec.iss
 
 #define AppName "svrspec"
-#define AppVersion "0.2.2"
+#define AppVersion "0.2.3"
 #define AppExe "svrspec.exe"
 #define BuildDir "..\build\exe.win-amd64-3.12"
 
@@ -33,6 +33,16 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 DisableProgramGroupPage=yes
 AppComments=GPU 서빙 서버 스펙 산정 시뮬레이터
+; The app updates itself by running this installer with /SILENT
+; /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS. Both of these are required for that
+; to work: Restart Manager is what lets Setup close the running svrspec.exe,
+; replace the files it was holding open, and start it again afterwards. Without
+; them a silent update over a running app either fails or defers to a reboot,
+; which is not something an app update may ask for.
+CloseApplications=yes
+RestartApplications=yes
+; Never reboot Windows over an application update, whatever Setup concludes.
+AlwaysRestart=no
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"

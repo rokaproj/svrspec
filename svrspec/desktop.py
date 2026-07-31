@@ -136,7 +136,13 @@ class Api:
         return update_payload()
 
     def update_install(self) -> str:
-        """Download, verify, launch. The window closes so the installer can run."""
+        """Download, verify, apply. The window closes and comes back updated.
+
+        Silent: no wizard, no licence page, no destination prompt. The user
+        consented by pressing the button, and asking them to re-agree to choices
+        they already made is friction, not consent. Setup closes this window,
+        replaces the files, and starts the app again on the new version.
+        """
         from . import update as up
 
         release = up.check(timeout=8.0)
@@ -152,7 +158,7 @@ class Api:
             return f"설치 파일을 실행할 수 없다: {exc}"
         if self.window is not None:
             self.window.destroy()
-        return f"설치 프로그램을 실행했다 · {path.name}"
+        return f"업데이트 적용 중 · {release.tag} — 창이 닫혔다가 새 버전으로 다시 열린다"
 
     # -- files -----------------------------------------------------------
     def save_report(self, params: dict | str, fmt: str = "html") -> str:
