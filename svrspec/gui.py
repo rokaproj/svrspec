@@ -1199,6 +1199,278 @@ def bench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Model performance
+# --------------------------------------------------------------------------
+#
+# The question underneath every other screen in this tool. The alarm pipeline is
+# one application of a model on a machine, not the only question worth asking
+# about it, and until now there was no surface that answered "put this model on
+# this server and how fast is it" without first inventing an alarm volume.
+#
+# Nothing here re-derives physics: `modelbench` owns that, and it owns it on top
+# of `perf`. This layer picks the axes, names the bounds in Korean, and refuses
+# to let a non-finite float reach the browser.
+
+#: Korean names for the two phases a request is spent in. They are worth naming
+#: because they use opposite halves of the machine, which is the whole point of
+#: the resource-split view.
+PHASE_LABEL = {"prefill": "프롬프트 처리", "decode": "토큰 생성"}
+
+#: Every ceiling `perf` can report, including the per-core one, which the alarm
+#: screens fold into "대역폭" and this one does not: "코어를 더 사라" and "채널을
+#: 더 사라" are different orders.
+MB_BOUND_LABEL = {
+    "bandwidth": "메모리 대역폭",
+    "core-bandwidth": "코어당 대역폭",
+    "compute": "연산",
+    "none": "없음",
+}
+
+#: What being held by that ceiling means at the order form.
+MB_BOUND_ADVICE = {
+    "bandwidth": "메모리 채널 수와 DDR 등급이 돈이 되는 곳이다. 코어를 더 사도 이 벽은 그대로다.",
+    "core-bandwidth": "코어 하나가 끌어올 수 있는 대역폭에 걸렸다. 채널을 더 채우기보다 "
+                      "코어를 늘리거나 슬롯을 늘려 여러 코어가 함께 읽게 해야 한다.",
+    "compute": "코어 수와 벡터 ISA(AMX/AVX-512)가 돈이 되는 곳이다. 메모리를 더 빠르게 해도 "
+               "이 벽은 그대로다.",
+    "none": "이 위상에서는 어느 천장에도 붙지 않았다.",
+}
+
+TRAIN_LABEL = {"full": "full 파인튜닝", "lora": "LoRA", "qlora": "QLoRA"}
+
+#: Below this, generated text arrives slower than a person reads it, so "몇 명까지
+#: 쓸 만한가"에 답하려면 이 선을 그려야 한다. A round number on purpose: it is a
+#: reading-comfort threshold, not a measurement.
+READABLE_TPS = 10.0
+
+#: The grid axes, fixed on the server. A browser cannot ask for a four-hundred
+#: point sweep, and the columns the page labels are always the ones it drew.
+MB_BATCHES = (1, 2, 4, 8, 16, 32)
+MB_CONTEXTS = (512, 2048, 4096, 8192, 16384)
+MB_USERS = (1, 2, 4, 8, 16, 32, 64)
+
+#: Same rule as `LIMITS`: clamped, never trusted. `output_tokens` is not here on
+#: purpose -- it is already a workload field, and the generation length that
+#: sizes the KV cache has to be the same one the concurrency curve times.
+MODELBENCH_LIMITS = {"train_samples": (100, 10_000_000)}
+MODELBENCH_DEFAULTS = {"train_samples": 10_000}
+
+
+def _mb_number(raw: dict, key: str) -> int:
+    low, high = MODELBENCH_LIMITS[key]
+    try:
+        value = int(float(raw.get(key, MODELBENCH_DEFAULTS[key])))
+    except (TypeError, ValueError):
+        value = MODELBENCH_DEFAULTS[key]
+    return max(low, min(high, value))
+
+
+def _mb_ttft(pt) -> float | None:
+    """Time to first token for one grid point.
+
+    The engine reports it where it has it. Where it does not, TTFT *is* the
+    prompt divided by the rate the prompt is processed at, so it is derived here
+    rather than left blank -- it is the number a person waits through, and a
+    blank cell would be the one thing this screen must not print.
+    """
+    direct = _finite(getattr(pt, "ttft_s", None))
+    if direct is not None:
+        return direct
+    rate, ctx = _finite(pt.prefill_tps), _finite(pt.ctx_tokens)
+    if rate is None or ctx is None or rate <= 0:
+        return None
+    return ctx / rate
+
+
+def _throughput_row(pt) -> dict:
+    prefill, decode = str(pt.prefill_bound), str(pt.decode_bound)
+    return {
+        "batch": int(pt.batch),
+        "ctx_tokens": int(pt.ctx_tokens),
+        "ttft_s": _r(_mb_ttft(pt), 2),
+        "prefill_tps": _r(pt.prefill_tps, 1),
+        "decode_tps_single": _r(pt.decode_tps_single, 2),
+        "decode_tps_total": _r(pt.decode_tps_total, 2),
+        "prefill_bound": prefill,
+        "decode_bound": decode,
+        "prefill_bound_label": MB_BOUND_LABEL.get(prefill, prefill),
+        "decode_bound_label": MB_BOUND_LABEL.get(decode, decode),
+    }
+
+
+def _concurrency_row(pt) -> dict:
+    each = _finite(pt.decode_tps_each)
+    return {
+        "users": int(pt.users),
+        "ttft_s": _r(pt.ttft_s, 2),
+        "decode_tps_each": _r(pt.decode_tps_each, 2),
+        "response_s": _r(pt.response_s, 2),
+        "total_tps": _r(pt.total_tps, 1),
+        # A word, not only a colour: the page prints this next to the number.
+        "readable": bool(each is not None and each >= READABLE_TPS),
+    }
+
+
+def _split_row(s) -> dict:
+    phase, bound = str(s.phase), str(s.bound_by)
+    return {
+        "phase": phase,
+        "phase_label": PHASE_LABEL.get(phase, phase),
+        "bandwidth_pct": _r(s.bandwidth_pct, 1),
+        "compute_pct": _r(s.compute_pct, 1),
+        "bound_by": bound,
+        "bound_label": MB_BOUND_LABEL.get(bound, bound),
+        "advice": MB_BOUND_ADVICE.get(bound, ""),
+        "bytes_per_token": _r(s.bytes_per_token, 1),
+        "flops_per_token": _r(s.flops_per_token, 1),
+    }
+
+
+def _training_row(t) -> dict:
+    """One verdict, with its reasons attached.
+
+    `reasons` and `gpu_comparison` are not decoration. For a CPU server the
+    answer is usually "no", and a bare "no" is not a result anybody can act on
+    -- the reasons say what was short and the GPU line says what it would take.
+    """
+    kind = str(t.kind)
+    feasible = bool(t.feasible)
+    return {
+        "kind": kind,
+        "kind_label": TRAIN_LABEL.get(kind, kind),
+        "feasible": feasible,
+        "verdict": "가능" if feasible else "불가",
+        "memory_needed_gb": _r(t.memory_needed_gb, 1),
+        "memory_available_gb": _r(t.memory_available_gb, 1),
+        "step_seconds": _r(t.step_seconds, 2),
+        "epoch_hours": _r(t.epoch_hours, 1),
+        "reasons": [str(r) for r in (t.reasons or ())],
+        "gpu_comparison": str(t.gpu_comparison or ""),
+    }
+
+
+def _mb_pick(rows: list, batch: int, ctx: int) -> dict | None:
+    """One grid point by coordinate. The engine owns the row order; this does not."""
+    for row in rows:
+        if row["batch"] == batch and row["ctx_tokens"] == ctx:
+            return row
+    return rows[0] if rows else None
+
+
+def _mb_summary(rows: list, output_tokens: int) -> dict:
+    """The two numbers a person actually feels, and the one they get confused with.
+
+    Generation tok/s is what one sequence sees. The server total is what the box
+    adds up to across every sequence in the batch. Quoting the second as if it
+    were the first is exactly the mistake this screen exists to prevent, so the
+    summary carries both, names the condition they hold for, and keeps the
+    batched figures beside them for contrast.
+
+    TTFT is the other half of "how does this feel": generation speed says how
+    fast the answer streams, TTFT says how long you stare at nothing first.
+    """
+    ref = _mb_pick(rows, MB_BATCHES[0], MB_CONTEXTS[0])
+    if ref is None:
+        return {
+            "batch": None, "ctx_tokens": None, "gen_tps": None, "ttft_s": None,
+            "total_tps": None, "readable": False, "condition": "",
+            "busy_batch": None, "busy_gen_tps": None, "busy_total_tps": None,
+            "long_ctx_tokens": None, "long_gen_tps": None,
+        }
+    busiest = _mb_pick(rows, MB_BATCHES[-1], MB_CONTEXTS[0])
+    longest = _mb_pick(rows, MB_BATCHES[0], MB_CONTEXTS[-1])
+    gen = _finite(ref["decode_tps_single"])
+    return {
+        "batch": ref["batch"],
+        "ctx_tokens": ref["ctx_tokens"],
+        "gen_tps": ref["decode_tps_single"],
+        "ttft_s": ref["ttft_s"],
+        "total_tps": ref["decode_tps_total"],
+        "readable": bool(gen is not None and gen >= READABLE_TPS),
+        "condition": (
+            f"배치 {ref['batch']} · 컨텍스트 {ref['ctx_tokens']:,} 토큰 "
+            f"· 생성 {output_tokens} 토큰 기준"
+        ),
+        "busy_batch": busiest["batch"] if busiest else None,
+        "busy_gen_tps": busiest["decode_tps_single"] if busiest else None,
+        "busy_total_tps": busiest["decode_tps_total"] if busiest else None,
+        "long_ctx_tokens": longest["ctx_tokens"] if longest else None,
+        "long_gen_tps": longest["decode_tps_single"] if longest else None,
+    }
+
+
+def modelbench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict | None = None) -> dict:
+    """Four axes of one model on one machine: inference, concurrency, resources, training.
+
+    Button-driven, for the same reason as `capacity_payload` and `bench_payload`:
+    the grid is dozens of predictions plus a training verdict, and none of it
+    changes usefully while somebody is still typing a DIMM count.
+
+    Imported lazily so a partially installed tree still serves the other
+    screens: this is an added surface, not a load-time dependency of them.
+    """
+    raw = raw or {}
+    vm, asm = _assemble(cat, p, cpu_id, str(raw.get("name", "M")))
+    machine = _lab_block(cat, vm, asm)
+    output_tokens = int(p["output_tokens"])
+    train_samples = _mb_number(raw, "train_samples")
+
+    base = {
+        "machine": machine,
+        "findings": machine["findings"],
+        "ok": machine["ok"],
+        "blocked": None,
+        "model_name": machine["model"]["name"],
+        "quant_id": machine["model"]["quant"],
+        "hardware": machine["headline"],
+        "batches": list(MB_BATCHES),
+        "contexts": list(MB_CONTEXTS),
+        "users": list(MB_USERS),
+        "output_tokens": output_tokens,
+        "train_samples": train_samples,
+        "readable_tps": READABLE_TPS,
+        "throughput": [],
+        "concurrency": [],
+        "resources": [],
+        "training": [],
+        "summary": _mb_summary([], output_tokens),
+        "memory_gb": None,
+        "uncertainty": None,
+        "notes": [],
+        "warnings": [],
+    }
+
+    # A build with an error-level finding is not a machine. Quoting tok/s for
+    # hardware nobody can order is worse than saying what is wrong with it.
+    if not machine["ok"]:
+        base["blocked"] = "구성에 오류가 있다 — 아래 문제를 먼저 고쳐야 모델 성능을 낼 수 있다."
+        return base
+
+    from .modelbench import bench_model
+
+    mb = bench_model(
+        asm, batches=MB_BATCHES, contexts=MB_CONTEXTS, users=MB_USERS,
+        output_tokens=output_tokens, train_samples=train_samples,
+    )
+    base["model_name"] = str(mb.model_name)
+    base["quant_id"] = str(mb.quant_id)
+    base["hardware"] = str(mb.hardware)
+    base["throughput"] = [_throughput_row(x) for x in mb.throughput]
+    base["concurrency"] = [_concurrency_row(x) for x in mb.concurrency]
+    base["resources"] = [_split_row(x) for x in mb.resources]
+    base["training"] = [_training_row(x) for x in mb.training]
+    base["summary"] = _mb_summary(base["throughput"], output_tokens)
+    base["memory_gb"] = _r(mb.memory_gb, 2)
+    base["uncertainty"] = _r((_finite(mb.uncertainty) or 0.0) * 100, 0)
+    base["notes"] = [str(n) for n in (mb.notes or ())]
+    base["warnings"] = [str(w) for w in (mb.warnings or ())]
+    # The engine is free to hand back an infinity for a step time it could not
+    # bound; `allow_nan=False` would reject the body and the page would see a
+    # failure instead of a null. Deal with it here, once, for every axis.
+    return _clean(base)
+
+
+# --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 
@@ -1251,7 +1523,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
         if route not in ("/api/size", "/api/resources", "/api/capacity",
-                         "/api/lab", "/api/bench"):
+                         "/api/lab", "/api/bench", "/api/modelbench"):
             self._error("not found", 404)
             return
         try:
@@ -1285,14 +1557,21 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(bench_payload(
                     self.catalog, _params(raw), str(raw.get("cpu", "")), raw
                 ))
+            elif route == "/api/modelbench":
+                self._json(modelbench_payload(
+                    self.catalog, _params(raw), str(raw.get("cpu", "")), raw
+                ))
             else:
                 self._json(size_payload(self.catalog, _params(raw)))
-        except (CatalogError, ValueError, TypeError) as exc:
+        except (CatalogError, ValueError, TypeError, AttributeError) as exc:
+            # AttributeError is in here for the engines: a payload built against
+            # a dataclass that shipped a field short must report a sentence, not
+            # hand the browser a 500 with a traceback in the log.
             self._error(str(exc))
         except ImportError as exc:
-            # The lab and the bench are optional engines. A tree missing one of
-            # them must say so in a sentence, not hand the browser a traceback.
-            self._error(f"이 빌드에는 가상 랩 엔진이 없다: {exc}")
+            # The lab, the bench and the model bench are optional engines. A tree
+            # missing one must say so in a sentence, not hand back a traceback.
+            self._error(f"이 빌드에는 그 엔진이 없다: {exc}")
 
     def _download(self, route) -> None:
         query = {k: v[0] for k, v in parse_qs(route.query).items()}
@@ -1394,9 +1673,9 @@ main{
 @media (max-width:1340px){:root{--rail-w:300px}}
 @media (max-width:900px){
   main{grid-template-columns:minmax(0,1fr)}
-  #rail,#lab-rail{position:static; max-height:none; overflow:visible}
+  #rail,#lab-rail,#mb-rail{position:static; max-height:none; overflow:visible}
 }
-#rail,#lab-rail{
+#rail,#lab-rail,#mb-rail{
   position:sticky; top:calc(var(--header-h) + var(--s5));
   display:flex; flex-direction:column; gap:var(--s3);
   /* Own scrollbar: a long form must not be clipped by the viewport, and the
@@ -1447,7 +1726,9 @@ button:hover{border-color:var(--text-tertiary)}
 }
 .actions a:hover{border-color:var(--accent); color:var(--accent); text-decoration:none}
 
-#results,#lab-results{display:flex; flex-direction:column; gap:var(--s5); min-width:0}
+#results,#lab-results,#mb-results{
+  display:flex; flex-direction:column; gap:var(--s5); min-width:0;
+}
 #results.stale{opacity:0.55}
 @media (prefers-reduced-motion:no-preference){
   #results{transition:opacity 120ms ease-out}
@@ -1618,7 +1899,8 @@ tbody tr.weak{background:var(--selected-bg); box-shadow:inset 3px 0 0 var(--erro
    things that are new here are the ones the sizing screen has no equivalent
    for -- a channel strip, a findings list, and a transport for playing a
    recorded run back. */
-nav.views{display:flex; gap:var(--s1)}
+nav.views{display:flex; gap:var(--s1); min-width:0; overflow-x:auto}
+nav.views button{white-space:nowrap}
 nav.views button[aria-pressed="true"]{
   border-color:var(--accent); color:var(--accent); background:var(--selected-bg);
 }
@@ -1716,6 +1998,54 @@ main[hidden]{display:none}
 .bench-chart svg{width:100%; height:220px; display:block}
 .bench-chart .axis{font-size:10px; fill:var(--text-tertiary)}
 .pgroup[hidden]{display:none}
+
+/* --- Model performance -------------------------------------------------
+   The default screen. It borrows the card, the table, the gauge and the
+   metric picker the other two screens already use -- a new tab that looked
+   like a different product would just be a second tool in the same window.
+   The only new geometry is a two-up pair for things that only make sense
+   read against each other: prefill against decode, and the three training
+   verdicts against one another. */
+.mb-pair{display:grid; gap:var(--s4);
+  grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.mb-metrics{display:flex; flex-wrap:wrap; gap:var(--s2); margin-bottom:var(--s3)}
+.mb-metrics button[aria-pressed="true"]{border-color:var(--accent); color:var(--accent)}
+.mb-chart{
+  border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg-tertiary); padding:var(--s3); margin-bottom:var(--s3);
+}
+.mb-chart svg{width:100%; height:210px; display:block}
+.mb-chart .axis{font-size:10px; fill:var(--text-tertiary)}
+/* The grid's first column is a row label, not a number, so it does not get the
+   tabular alignment the measurements do. */
+.mb-grid td:first-child,.mb-grid th:first-child{font-weight:600}
+.mb-verdict{display:flex; flex-wrap:wrap; align-items:baseline;
+  gap:var(--s1) var(--s2); margin-top:var(--s2); font-size:var(--fs-md)}
+.mb-verdict .num{font-variant-numeric:tabular-nums; font-size:var(--fs-sm);
+  color:var(--text-secondary)}
+
+/* The two numbers a person actually feels -- how fast the answer streams, and
+   how long they stare at nothing first -- set at the top and set large. The
+   server total sits beside them on purpose: it is the figure those two get
+   confused with, and putting it anywhere else invites quoting it as if it were
+   what one user sees. */
+.mb-head{display:grid; gap:var(--s3); margin-top:var(--s4);
+  grid-template-columns:repeat(auto-fit,minmax(196px,1fr))}
+.h-tile{
+  border:1px solid var(--border); border-left:3px solid var(--accent);
+  border-radius:var(--radius-sm); background:var(--bg-tertiary);
+  padding:var(--s3) var(--s4);
+}
+.h-tile.total{border-left-color:var(--text-tertiary)}
+.h-name{font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary)}
+.h-val{
+  font-size:var(--fs-xl); font-weight:600; line-height:1.15;
+  letter-spacing:-0.02em; font-variant-numeric:tabular-nums;
+  margin-top:var(--s1);
+}
+.h-val .h-unit{font-size:var(--fs-sm); font-weight:600; letter-spacing:0;
+  color:var(--text-secondary); margin-left:var(--s1)}
+.h-sub{font-size:var(--fs-xs); color:var(--text-tertiary); margin-top:var(--s1)}
 """
 
 def app_html(mode: str = "server") -> str:
@@ -1735,15 +2065,87 @@ def app_html(mode: str = "server") -> str:
   <h1>svrspec</h1>
   <span class="tag">GPU 서빙 서버 스펙 산정</span>
   <nav class="views" aria-label="화면 전환">
-    <button id="view-size" type="button" aria-pressed="true">산정</button>
-    <button id="view-lab" type="button" aria-pressed="false">가상 랩</button>
+    <button id="view-model" type="button" aria-pressed="true">모델 성능</button>
+    <button id="view-size" type="button" aria-pressed="false">자원</button>
+    <button id="view-lab" type="button" aria-pressed="false">적용 사례: 관제 알람</button>
   </nav>
   <span class="spacer"></span>
   <button id="update" type="button" hidden></button>
   <button id="theme" type="button" aria-label="화면 테마 전환">테마: 자동</button>
 </header>
 
-<main id="size">
+<main id="model">
+  <form id="mb-rail" aria-label="모델 성능 조건">
+    <fieldset>
+      <legend>모델</legend>
+      <div class="field">
+        <label for="mb-model">LLM</label>
+        <select id="mb-model"></select>
+        <span class="hint" id="mb-model-hint"></span>
+      </div>
+      <div class="field">
+        <label for="mb-quant">양자화</label>
+        <select id="mb-quant"></select>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>이 모델을 올릴 서버</legend>
+      <div class="field">
+        <label for="mb-cpu">CPU</label>
+        <select id="mb-cpu"></select>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="mb-sockets">소켓</label>
+          <select id="mb-sockets"></select>
+        </div>
+        <div class="field">
+          <label for="mb-slots">동시 슬롯</label>
+          <input type="number" id="mb-slots" min="1" max="64" value="4">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="mb-dimm-gb">DIMM 용량(GB)</label>
+          <input type="number" id="mb-dimm-gb" min="1" max="1024" step="8" value="32">
+        </div>
+        <div class="field">
+          <label for="mb-dimm-count">DIMM 개수</label>
+          <input type="number" id="mb-dimm-count" min="0" max="64" value="8">
+        </div>
+      </div>
+      <span class="hint" id="mb-hw-hint"></span>
+    </fieldset>
+
+    <fieldset>
+      <legend>측정 조건</legend>
+      <div class="row">
+        <div class="field">
+          <label for="mb-output-tokens">생성 토큰 수</label>
+          <input type="number" id="mb-output-tokens" min="1" max="32000" step="32" value="256">
+        </div>
+        <div class="field">
+          <label for="mb-train-samples">학습 샘플 수</label>
+          <input type="number" id="mb-train-samples" min="100" max="10000000"
+                 step="1000" value="10000">
+        </div>
+      </div>
+      <span class="hint">배치·컨텍스트·동시 사용자 축은 서버가 고정한다 — 표의 열이 그 축이다.
+        프롬프트 토큰 구성은 자원 화면의 값을 그대로 쓴다.</span>
+      <div class="bench-run">
+        <button id="mb-run" type="button">▶ 모델 성능 측정</button>
+      </div>
+      <span class="hint" id="mb-run-hint">실제 모델을 돌리지 않는다 — 카탈로그의 물리와 계수로 예측한다.</span>
+    </fieldset>
+  </form>
+
+  <div id="mb-results" aria-live="polite">
+    <div class="card">카탈로그를 불러오는 중…</div>
+  </div>
+</main>
+
+<main id="size" hidden>
   <form id="rail" aria-label="산정 조건">
     <fieldset>
       <legend>모델</legend>
@@ -4080,18 +4482,22 @@ def app_html(mode: str = "server") -> str:
     runLab();
   }
 
+  // Three screens now, one nav. "모델 성능" is the default because it answers the
+  // question the other two build on: how fast is this model on this machine at
+  // all. The alarm pipeline is one application of that answer, so it moved
+  // behind "적용 사례" instead of being the front door.
+  var VIEWS = ["model", "size", "lab"];
   function setView(which){
-    var isLab = which === "lab";
-    byId("size").hidden = isLab;
-    byId("lab").hidden = !isLab;
-    byId("view-size").setAttribute("aria-pressed", String(!isLab));
-    byId("view-lab").setAttribute("aria-pressed", String(isLab));
-    if(isLab){
-      stopPlayback();          // the token stream belongs to the other screen
-      if(!lab.asm.A && !lab.asmError.A) runLab();
-    } else {
-      stopBenchPlayback();
-    }
+    if(VIEWS.indexOf(which) < 0) which = "model";
+    VIEWS.forEach(function(v){
+      byId(v).hidden = (v !== which);
+      byId("view-" + v).setAttribute("aria-pressed", String(v === which));
+    });
+    // Each screen owns an animation; leaving it must stop it, or a hidden
+    // canvas keeps burning frames for a view nobody is looking at.
+    if(which !== "size") stopPlayback();
+    if(which !== "lab") stopBenchPlayback();
+    if(which === "lab" && !lab.asm.A && !lab.asmError.A) runLab();
   }
 
   function initLab(){
@@ -4127,6 +4533,575 @@ def app_html(mode: str = "server") -> str:
     });
     byId("view-size").addEventListener("click", function(){ setView("size"); });
     byId("view-lab").addEventListener("click", function(){ setView("lab"); });
+  }
+
+  // ---- model performance -------------------------------------------
+  // The default screen. Four axes of one model on one machine, and none of them
+  // mention an alarm: this is the question underneath the other two screens.
+  //
+  // Button-driven, same discipline and same reason as the capacity search and
+  // the load bench: dozens of predictions plus a training verdict is not a
+  // keystroke's worth of work, and the answer does not change usefully while
+  // somebody is still typing a DIMM count. Inputs move -> the result goes stale
+  // and says so; nothing re-runs by itself.
+  // Korean and the industry term together, everywhere. Two kinds of reader open
+  // this screen -- one who says "TTFT" and one who says "첫 토큰까지" -- and the
+  // engine's own field names (`decode_tps_single`) are never shown to either.
+  var MB_GEN = "생성 속도(Generation tok/s)";
+  var MB_TOTAL = "전체 합계(Total tok/s)";
+  var MB_TTFT = "첫 토큰까지(TTFT)";
+  var MB_METRICS = [
+    ["decode_tps_single", MB_GEN, "tok/s"],
+    ["decode_tps_total", MB_TOTAL, "tok/s"],
+    ["ttft_s", MB_TTFT, "초"],
+    ["prefill_tps", "프롬프트 처리(Prefill tok/s)", "tok/s"]
+  ];
+  var MB_UNIT = "tok/s";
+  var mbState = {key: null, data: null, error: null, busy: false,
+                 metric: "decode_tps_single"};
+  var NO_MB_BRIDGE =
+    "이 데스크톱 빌드에는 모델 성능 측정이 연결되어 있지 않다. 서버 모드(svrspec gui)에서 실행해라.";
+
+  function askModelBench(p){
+    if(DESKTOP){
+      // The bridge is a fixed surface in the packaged app. An installer that
+      // predates this screen must say so, not throw at the first click.
+      if(!(window.pywebview.api && window.pywebview.api.modelbench))
+        return Promise.resolve({error: NO_MB_BRIDGE});
+      return window.pywebview.api.modelbench(p);
+    }
+    return fetch("/api/modelbench", {method:"POST",
+                                     headers:{"Content-Type":"application/json"},
+                                     body: JSON.stringify(p)})
+      .then(function(r){ return r.json(); });
+  }
+
+  function mbParams(){
+    // The prompt token profile comes from the 자원 screen, the way the lab's
+    // does: one description of a prompt, not three that can disagree.
+    var p = params();
+    p.model = labVal("mb-model") || p.model;
+    p.quant = labVal("mb-quant") || p.quant;
+    p.cpu = labVal("mb-cpu");
+    p.sockets = labNum("mb-sockets", 1);
+    p.slots = labNum("mb-slots", 4);
+    p.dimm_gb = labNum("mb-dimm-gb", 32);
+    p.dimm_count = labNum("mb-dimm-count", 8);
+    // One generation length: it times the concurrency curve and it sizes the KV
+    // cache the assembly reports. Two would drift.
+    p.output_tokens = labNum("mb-output-tokens", 256);
+    p.train_samples = labNum("mb-train-samples", 10000);
+    p.name = "M";
+    delete p.volumes; delete p.only_pass;
+    return p;
+  }
+  function mbKey(p){
+    return JSON.stringify([p.model, p.quant, p.cpu, p.sockets, p.slots,
+                           p.dimm_gb, p.dimm_count, p.output_tokens, p.train_samples,
+                           p.system_tokens, p.fewshot_tokens, p.alarm_tokens,
+                           p.prompt_cache]);
+  }
+
+  function runModelBench(){
+    if(mbState.busy) return;
+    var p = mbParams(), key = mbKey(p);
+    mbState.busy = true; mbState.error = null;
+    renderModel();
+    askModelBench(p).then(function(d){
+      mbState.busy = false;
+      if(!d || d.error){
+        mbState.error = (d && d.error) || "알 수 없는 오류";
+        mbState.data = null;
+      } else {
+        mbState.key = key; mbState.data = d; mbState.error = null;
+      }
+      renderModel();
+    }).catch(function(err){
+      mbState.busy = false;
+      mbState.error = String(err);
+      renderModel();
+    });
+  }
+
+  function mbAt(d, batch, ctx){
+    var out = null;
+    (d.throughput || []).forEach(function(r){
+      if(r.batch === batch && r.ctx_tokens === ctx) out = r;
+    });
+    return out;
+  }
+  function mbCell(row, metric){
+    if(!row) return "-";
+    var v = row[metric];
+    return (v === null || v === undefined) ? "-" : fmtNum(num(v));
+  }
+  function mbMetricUnit(metric){
+    var unit = MB_UNIT;
+    MB_METRICS.forEach(function(m){ if(m[0] === metric) unit = m[2]; });
+    return unit;
+  }
+  function mbMetricLabel(metric){
+    var label = metric;
+    MB_METRICS.forEach(function(m){ if(m[0] === metric) label = m[1]; });
+    return label;
+  }
+
+  // The headline. Generation speed and TTFT are what somebody feels; the server
+  // total is the number those two get mistaken for, so it is shown next to them
+  // with the batch it belongs to spelled out.
+  function mbSummaryTiles(d){
+    var s = d.summary || {}, box = el("div", "mb-head");
+    function tile(name, value, unit, sub, cls){
+      var t = el("div", "h-tile" + (cls ? " " + cls : ""));
+      t.appendChild(el("div", "h-name", name));
+      var v = el("div", "h-val",
+                 (value === null || value === undefined) ? "-" : fmtNum(num(value)));
+      v.appendChild(el("span", "h-unit", unit));
+      t.appendChild(v);
+      if(sub) t.appendChild(el("div", "h-sub", sub));
+      box.appendChild(t);
+    }
+    tile(MB_GEN, s.gen_tps, MB_UNIT,
+         s.condition + " · " + (s.readable ? "쓸 만함" : "답답함"));
+    tile(MB_TTFT, s.ttft_s, "초",
+         "프롬프트 " + num(s.ctx_tokens).toLocaleString() + " 토큰을 처리하는 동안 기다리는 시간");
+    tile(MB_TOTAL, s.total_tps, MB_UNIT,
+         (s.busy_batch
+           ? "배치 " + s.busy_batch + "에서는 " + fmtNum(num(s.busy_total_tps)) + " " +
+             MB_UNIT + " — 대신 사용자당 " + fmtNum(num(s.busy_gen_tps)) + " " + MB_UNIT
+           : "서버 전체 합계 — 한 사용자가 보는 속도가 아니다"),
+         "total");
+    return box;
+  }
+
+  // Batch x context, one metric at a time. Three metrics on one grid would be
+  // three numbers per cell, and the two things this table has to make obvious --
+  // that batching buys total throughput with per-sequence speed, and that a long
+  // context slows decode down -- would be lost in the density.
+  function mbThroughput(d){
+    var wrap = el("div");
+    var picker = el("div", "mb-metrics");
+    MB_METRICS.forEach(function(pair){
+      var b = el("button", "", pair[1]);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(mbState.metric === pair[0]));
+      b.addEventListener("click", function(){
+        mbState.metric = pair[0]; renderModel();
+      });
+      picker.appendChild(b);
+    });
+    wrap.appendChild(picker);
+
+    var box = el("div", "scroll");
+    var tbl = el("table", "mb-grid"), thead = el("thead"), htr = el("tr");
+    htr.appendChild(el("th", "", "배치"));
+    (d.contexts || []).forEach(function(c){
+      htr.appendChild(el("th", "num", "ctx " + c.toLocaleString()));
+    });
+    htr.appendChild(el("th", "", "병목"));
+    thead.appendChild(htr); tbl.appendChild(thead);
+
+    var tbody = el("tbody");
+    (d.batches || []).forEach(function(b){
+      var tr = el("tr"), bound = "";
+      tr.appendChild(el("td", "", b + " 시퀀스"));
+      (d.contexts || []).forEach(function(c, i){
+        var row = mbAt(d, b, c);
+        tr.appendChild(el("td", "num", mbCell(row, mbState.metric)));
+        if(!i && row){
+          // TTFT is a prefill number, so it reads the prefill ceiling.
+          bound = (mbState.metric === "prefill_tps" || mbState.metric === "ttft_s")
+            ? row.prefill_bound_label : row.decode_bound_label;
+        }
+      });
+      tr.appendChild(el("td", "", bound));
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody); box.appendChild(tbl);
+    wrap.appendChild(box);
+    wrap.appendChild(el("p", "hint-row",
+      mbMetricLabel(mbState.metric) + " · 단위 " + mbMetricUnit(mbState.metric) +
+      " · 병목 열은 가장 짧은 컨텍스트에서 이 위상이 걸린 천장이다."));
+    wrap.appendChild(mbTradeoff(d));
+    return wrap;
+  }
+
+  // The two sentences the grid exists to support, computed from its own corners
+  // so they cannot claim a shape the numbers do not have.
+  function mbTradeoff(d){
+    var ul = el("ul", "notes");
+    var cs = d.contexts || [], bs = d.batches || [];
+    if(!cs.length || !bs.length) return ul;
+    var c0 = cs[0], cN = cs[cs.length - 1], b0 = bs[0], bN = bs[bs.length - 1];
+    var lo = mbAt(d, b0, c0), hi = mbAt(d, bN, c0), long = mbAt(d, b0, cN);
+    if(lo && hi){
+      ul.appendChild(el("li", "",
+        "배치를 " + b0 + " → " + bN + "로 올리면 " + MB_TOTAL + "은 " +
+        fmtNum(num(lo.decode_tps_total)) + " → " + fmtNum(num(hi.decode_tps_total)) +
+        " " + MB_UNIT + "로 오르지만, 한 사용자가 보는 " + MB_GEN + "는 " +
+        fmtNum(num(lo.decode_tps_single)) + " → " + fmtNum(num(hi.decode_tps_single)) +
+        " " + MB_UNIT + "로 떨어진다. 배치는 처리량을 사고 응답 속도를 판다."));
+    }
+    if(lo && long){
+      ul.appendChild(el("li", "",
+        "컨텍스트를 " + c0.toLocaleString() + " → " + cN.toLocaleString() +
+        " 토큰으로 늘리면 같은 배치에서 " + MB_GEN + "가 " +
+        fmtNum(num(lo.decode_tps_single)) + " → " + fmtNum(num(long.decode_tps_single)) +
+        " " + MB_UNIT + "로 떨어지고, " + MB_TTFT + "는 " +
+        fmtNum(num(lo.ttft_s)) + " → " + fmtNum(num(long.ttft_s)) +
+        "초로 늘어난다. 토큰마다 그만큼 커진 KV 캐시를 다시 읽어야 하기 때문이다."));
+    }
+    return ul;
+  }
+
+  // "몇 명까지 쓸 만한가" is a threshold question, so the threshold is drawn.
+  function mbConcurrencyChart(d){
+    var W = 600, H = 190, PAD = 34;
+    var rows = d.concurrency || [];
+    var vals = rows.map(function(c){ return num(c.decode_tps_each); });
+    var line = num(d.readable_tps);
+    var max = Math.max.apply(null, vals.concat([line * 1.3, 1]));
+    var last = vals.length ? vals[vals.length - 1] : 0;
+    var svg = svgEl("svg", {viewBox: "0 0 " + W + " " + H,
+                            preserveAspectRatio: "none", role: "img",
+                            "aria-label":
+                              "동시 사용자 " + (rows.length ? rows[0].users : 0) + "명에서 " +
+                              (rows.length ? rows[rows.length - 1].users : 0) +
+                              "명까지, 사용자당 체감 생성 속도가 " + fmtNum(vals[0] || 0) +
+                              "에서 " + fmtNum(last) + " " + MB_UNIT + "로 변한다. " +
+                              "읽기 편한 기준선은 " + fmtNum(line) + " " + MB_UNIT + "다."});
+    var iw = W - PAD, ih = H - 14;
+    for(var i = 0; i <= 4; i++){
+      var y = (ih / 4) * i;
+      svg.appendChild(svgEl("line", {x1: PAD, y1: y.toFixed(1), x2: W, y2: y.toFixed(1),
+                                     stroke: "var(--border)", "stroke-width": "1"}));
+      var t = svgEl("text", {x: 0, y: (y + 4).toFixed(1), class: "axis"});
+      t.textContent = fmtNum(max * (1 - i / 4));
+      svg.appendChild(t);
+    }
+    var g = svgEl("g", {transform: "translate(" + PAD + ",0)"});
+    g.appendChild(svgEl("path", {d: areaPath(vals, max, iw, ih),
+                                 fill: "var(--accent)", opacity: "0.20"}));
+    g.appendChild(svgEl("path", {d: linePath(vals, max, iw, ih), fill: "none",
+                                 stroke: "var(--accent)", "stroke-width": "1.5"}));
+    g.appendChild(svgEl("path", {d: flatLine(line, max, iw, ih), fill: "none",
+                                 stroke: "var(--warning)", "stroke-width": "1.5",
+                                 "stroke-dasharray": "5 4"}));
+    svg.appendChild(g);
+    return svg;
+  }
+
+  function mbConcurrency(d){
+    var wrap = el("div"), rows = d.concurrency || [];
+    var chart = el("div", "mb-chart");
+    var chead = el("div", "graph-head");
+    chead.appendChild(el("span", "g-title", "사용자당 " + MB_GEN));
+    chead.appendChild(el("span", "spacer"));
+    chead.appendChild(el("span", "g-scale", rows.length + "개 지점"));
+    chart.appendChild(chead);
+    chart.appendChild(mbConcurrencyChart(d));
+    var xs = el("div", "axis-x");
+    rows.forEach(function(c){ xs.appendChild(el("span", "", c.users + "명")); });
+    chart.appendChild(xs);
+    chart.appendChild(chartLegend([
+      {token: "accent", name: "사용자당 " + MB_GEN},
+      {token: "warning", name: "읽기 편한 하한 " + fmtNum(num(d.readable_tps)) + " " + MB_UNIT,
+       kind: "dash"}
+    ]));
+    wrap.appendChild(chart);
+
+    var box = el("div", "scroll");
+    var tbl = el("table"), thead = el("thead"), htr = el("tr");
+    ["동시 사용자", MB_TTFT, MB_GEN, "응답 완료", MB_TOTAL, "판정"]
+      .forEach(function(name, i){ htr.appendChild(el("th", i ? "num" : "", name)); });
+    thead.appendChild(htr); tbl.appendChild(thead);
+    var tbody = el("tbody");
+    rows.forEach(function(c){
+      var tr = el("tr", c.readable ? "" : "weak");
+      tr.appendChild(el("td", "", c.users + "명"));
+      tr.appendChild(el("td", "num", fmtNum(num(c.ttft_s)) + "초"));
+      tr.appendChild(el("td", "num", fmtNum(num(c.decode_tps_each)) + " " + MB_UNIT));
+      tr.appendChild(el("td", "num", fmtNum(num(c.response_s)) + "초"));
+      tr.appendChild(el("td", "num", fmtNum(num(c.total_tps)) + " " + MB_UNIT));
+      // Colour plus the word, like every other verdict in this tool.
+      tr.appendChild(el("td", c.readable ? "v-pass" : "v-fail",
+                        c.readable ? "쓸 만함" : "답답함"));
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody); box.appendChild(tbl);
+    wrap.appendChild(box);
+
+    var first = null;
+    rows.forEach(function(c){ if(first === null && !c.readable) first = c.users; });
+    // The headline tile and this table are both TTFT, and they can differ:
+    // different prompt length, different number. Saying so is cheaper than
+    // letting somebody find the discrepancy and stop trusting both.
+    var s = d.summary || {};
+    if(s.ctx_tokens){
+      wrap.appendChild(el("p", "hint-row",
+        "이 표의 " + MB_TTFT + "는 이 축이 쓰는 프롬프트 길이 기준이고, 상단 요약 타일은 배치 " +
+        s.batch + " · 컨텍스트 " + num(s.ctx_tokens).toLocaleString() +
+        " 토큰 조건이다 — 조건이 다르면 숫자도 다르다. 정확한 조건은 아래 “가정과 한계”에 있다."));
+    }
+    wrap.appendChild(el("p", "hint-row",
+      first === null
+        ? "탐색한 " + (rows.length ? rows[rows.length - 1].users : 0) +
+          "명까지는 사용자당 체감 속도가 " + fmtNum(num(d.readable_tps)) + " " + MB_UNIT +
+          " 아래로 내려가지 않았다."
+        : "사용자 " + first + "명에서 체감 속도가 " + fmtNum(num(d.readable_tps)) + " " +
+          MB_UNIT + " 아래로 내려간다 — 그 지점부터는 글자가 사람이 읽는 속도보다 늦게 나온다. " +
+          "응답 완료는 " + d.output_tokens + " 토큰 생성 기준이다."));
+    return wrap;
+  }
+
+  function mbGauge(name, pct, cls){
+    var box = el("div", "gauge");
+    box.appendChild(el("div", "g-name", name));
+    box.appendChild(el("div", "g-val", fmtNum(num(pct)) + "%"));
+    var bar = el("div", "bar " + cls + (num(pct) >= 90 ? " hot" : ""));
+    var span = el("span");
+    span.style.width = Math.max(0, Math.min(100, num(pct))) + "%";
+    bar.appendChild(span);
+    box.appendChild(bar);
+    return box;
+  }
+
+  // The screen that answers "코어를 살지 메모리 채널을 살지". Prefill and decode
+  // side by side because the answer is that they use opposite halves of the box,
+  // and one phase on its own cannot show that.
+  function mbResources(d){
+    var wrap = el("div"), rows = d.resources || [];
+    var pair = el("div", "mb-pair");
+    rows.forEach(function(s){
+      var card = el("div", "card");
+      card.appendChild(el("div", "label", s.phase_label));
+      card.appendChild(el("p", "cpu", "병목 · " + s.bound_label));
+      var gauges = el("div", "gauges");
+      gauges.appendChild(mbGauge("메모리 대역폭", s.bandwidth_pct, "g-bw"));
+      gauges.appendChild(mbGauge("연산", s.compute_pct, ""));
+      card.appendChild(gauges);
+      card.appendChild(el("p", "hint",
+        "토큰당 " + num(s.bytes_per_token).toLocaleString() + " B 읽기 · " +
+        num(s.flops_per_token).toLocaleString() + " FLOP"));
+      if(s.advice) card.appendChild(el("p", "hint-row", s.advice));
+      pair.appendChild(card);
+    });
+    wrap.appendChild(pair);
+
+    var byPhase = {};
+    rows.forEach(function(s){ byPhase[s.phase] = s; });
+    var pf = byPhase.prefill, de = byPhase.decode;
+    if(pf && de){
+      wrap.appendChild(el("p", "hint-row",
+        pf.bound_by === de.bound_by
+          ? "이 조합에서는 두 위상이 같은 천장(" + pf.bound_label + ")에 걸렸다. " +
+            "그쪽을 늘리는 것이 양쪽 모두에 듣는다는 뜻이다."
+          : "프롬프트 처리는 " + pf.bound_label + "에, 토큰 생성은 " + de.bound_label +
+            "에 걸린다 — 기계의 반대쪽이다. 프롬프트가 긴 부하라면 코어와 벡터 ISA를, " +
+            "생성이 긴 부하라면 메모리 채널과 DDR 등급을 사야 한다."));
+    }
+    return wrap;
+  }
+
+  // Usually the answer is "안 된다", and that is the honest result. It is not
+  // shrunk into a footnote: the reasons and the GPU comparison are what make a
+  // refusal actionable.
+  function mbTraining(d){
+    var wrap = el("div");
+    var pair = el("div", "mb-pair");
+    (d.training || []).forEach(function(t){
+      var card = el("div", "card");
+      card.appendChild(el("div", "label", t.kind_label));
+      var verdict = el("div", "mb-verdict");
+      verdict.appendChild(el("strong", t.feasible ? "v-pass" : "v-fail", t.verdict));
+      verdict.appendChild(el("span", "num",
+        "필요 " + fmtNum(num(t.memory_needed_gb)) + " GB / 장착 " +
+        fmtNum(num(t.memory_available_gb)) + " GB"));
+      card.appendChild(verdict);
+      var bits = [];
+      if(t.step_seconds !== null && t.step_seconds !== undefined)
+        bits.push("1 step " + fmtNum(num(t.step_seconds)) + "초");
+      if(t.epoch_hours !== null && t.epoch_hours !== undefined)
+        bits.push("1 epoch " + fmtNum(num(t.epoch_hours)) + "시간");
+      if(bits.length) card.appendChild(el("p", "hint", bits.join(" · ")));
+      if(t.reasons && t.reasons.length){
+        var ul = el("ul", "notes");
+        t.reasons.forEach(function(r){ ul.appendChild(el("li", "", r)); });
+        card.appendChild(ul);
+      }
+      card.appendChild(el("p", "hint-row",
+        "GPU 비교 · " + (t.gpu_comparison || "엔진이 비교값을 내지 않았다")));
+      pair.appendChild(card);
+    });
+    wrap.appendChild(pair);
+    wrap.appendChild(el("p", "hint-row",
+      "학습 축의 계수는 카탈로그에 근거가 없다 — 공개 자료로 환산한 추정이고, 위 판정은 그 " +
+      "가정 위에 서 있다. 샘플 " + num(d.train_samples).toLocaleString() +
+      "건 기준이며, 안 된다는 판정도 결과다: 근거를 읽고 GPU 쪽과 비교해라."));
+    return wrap;
+  }
+
+  function mbList(items){
+    var ul = el("ul", "notes");
+    items.forEach(function(x){ ul.appendChild(el("li", "", x)); });
+    return ul;
+  }
+
+  function renderModel(){
+    var host = byId("mb-results");
+    if(!host) return;
+    host.textContent = "";
+    var fresh = !!mbState.data && mbState.key === mbKey(mbParams());
+    var d = mbState.data;
+
+    var card = el("div", "card");
+    card.appendChild(el("div", "label", "모델 성능"));
+    card.appendChild(el("p", "prose",
+      "이 서버에 이 모델을 올리면 실제로 어떤 성능이 나오는지를 낸다 — 추론 처리량, " +
+      "동시 사용자, 연산 자원 분해, 학습 가능 여부. 관제 알람은 이 성능을 쓰는 하나의 " +
+      "적용 사례이고, 이 화면은 그 아래의 질문에 먼저 답한다. 실제 모델이나 벤치마크를 " +
+      "돌리지 않는다: 카탈로그의 물리와 계수로 예측한다."));
+    if(d && fresh && !d.blocked){
+      card.appendChild(el("p", "cpu", d.model_name + " · " + d.quant_id));
+      card.appendChild(el("p", "detail", d.hardware));
+      // The two felt numbers first, before any table: this is what somebody
+      // opened the screen to read.
+      card.appendChild(mbSummaryTiles(d));
+      card.appendChild(el("p", "hint-row",
+        "사람은 " + fmtNum(num(d.readable_tps)) + " " + MB_UNIT +
+        " 아래로 내려가면 글자가 읽는 속도보다 늦게 나와 기다린다는 느낌을 받는다 — " +
+        "아래 동시 사용자 표에 그 지점을 표시했다."));
+      card.appendChild(el("p", "hint",
+        "추론 시 실사용 " + fmtNum(num(d.memory_gb)) + " GB · 예측 오차 ±" +
+        fmtNum(num(d.uncertainty)) + "% · 생성 " + d.output_tokens + " 토큰 기준"));
+    }
+    if(mbState.error){
+      card.appendChild(el("div", "note", "모델 성능 측정 실패: " + mbState.error));
+    }
+    if(mbState.busy){
+      card.appendChild(el("p", "hint-row",
+        "배치·컨텍스트 격자와 동시 사용자 곡선, 학습 판정을 계산하는 중…"));
+    } else if(!d){
+      card.appendChild(el("p", "hint-row",
+        "왼쪽에서 모델과 서버를 고르고 “모델 성능 측정”을 누르면 여기에 네 축이 나온다. " +
+        "입력을 바꿔도 자동으로 다시 돌지 않는다."));
+    } else if(!fresh){
+      card.appendChild(el("div", "note",
+        "입력이 바뀌었다. 아래 결과는 지금 조건과 맞지 않으므로 다시 측정해야 한다."));
+    }
+    host.appendChild(card);
+
+    var run = byId("mb-run");
+    if(run){
+      run.disabled = mbState.busy;
+      run.textContent = mbState.busy ? "측정 중…"
+        : (d ? "▶ 다시 측정" : "▶ 모델 성능 측정");
+    }
+    var hint = byId("mb-run-hint");
+    if(hint){
+      hint.textContent = mbState.busy
+        ? "계산하는 동안 다른 화면은 계속 쓸 수 있다."
+        : "실제 모델을 돌리지 않는다 — 카탈로그의 물리와 계수로 예측한다.";
+    }
+
+    if(!d) return;
+    if(d.blocked){
+      var bad = el("div", "card");
+      bad.appendChild(el("div", "label", "조립 오류"));
+      bad.appendChild(el("p", "headline", d.blocked));
+      if(d.findings && d.findings.length) bad.appendChild(findingList(d.findings));
+      host.appendChild(bad);
+      return;
+    }
+
+    host.appendChild(section("추론 처리량", "배치 × 컨텍스트", mbThroughput(d)));
+    host.appendChild(section("동시 사용자",
+      "출력 " + d.output_tokens + " 토큰 기준", mbConcurrency(d)));
+    host.appendChild(section("연산 자원 분해",
+      "prefill과 decode는 기계의 반대쪽을 쓴다", mbResources(d)));
+    host.appendChild(section("학습·파인튜닝", "full · LoRA · QLoRA", mbTraining(d)));
+    if(d.findings && d.findings.length){
+      host.appendChild(section("조립 지적", "성능 이전에 하드웨어 쪽 문제",
+                               findingList(d.findings)));
+    }
+    if(d.warnings && d.warnings.length){
+      host.appendChild(section("주의사항", "예측 엔진이 낸 경고", mbList(d.warnings)));
+    }
+    if(d.notes && d.notes.length){
+      host.appendChild(section("가정과 한계", "이 숫자가 무엇을 가정했는지", mbList(d.notes)));
+    }
+  }
+
+  function mbFillSockets(){
+    var cpu = cpuById(labVal("mb-cpu"));
+    var most = Math.max(1, (cpu && cpu.sockets_max) || 1);
+    var want = labNum("mb-sockets", 1);
+    var list = [];
+    for(var i = 1; i <= most; i++) list.push([i, i + "소켓"]);
+    fillSelect(byId("mb-sockets"), list);
+    byId("mb-sockets").value = String(Math.max(1, Math.min(most, want)));
+  }
+
+  function mbHints(){
+    var id = labVal("mb-model");
+    var m = (catalog.models || []).filter(function(x){ return x.id === id; })[0];
+    var mh = byId("mb-model-hint");
+    if(mh){
+      mh.textContent = m
+        ? [m.params_b + "B", "KV " + m.kv_kib + " KiB/토큰",
+           "학습 컨텍스트 " + num(m.ctx_train).toLocaleString()].join(" · ")
+        : "";
+    }
+    var cpu = cpuById(labVal("mb-cpu")), hh = byId("mb-hw-hint");
+    if(!hh) return;
+    if(!cpu){ hh.textContent = ""; return; }
+    var sockets = labNum("mb-sockets", 1);
+    var count = labNum("mb-dimm-count", 0), gb = labNum("mb-dimm-gb", 0);
+    var channels = num(cpu.mem_channels) * sockets;
+    hh.textContent =
+      count * gb + " GB · " + Math.min(count, channels) + "/" + channels + " 채널 · " +
+      cpu.ddr_gen + " · 최대 " + num(cpu.max_mem_gb) * sockets + " GB";
+  }
+
+  function onModelInput(ev){
+    var id = (ev && ev.target && ev.target.id) || "";
+    if(id === "mb-cpu") mbFillSockets();
+    mbHints();
+    // Never re-runs the measurement: it only redraws, which is what marks the
+    // previous answer stale.
+    renderModel();
+  }
+
+  function initModel(){
+    fillSelect(byId("mb-model"), (catalog.models || []).map(function(m){
+      return [m.id, m.name + " (" + m.params_b + "B)"];
+    }));
+    fillSelect(byId("mb-quant"), (catalog.quants || []).map(function(q){
+      return [q.id, q.id + " (" + q.bpw + " bpw)"];
+    }));
+    fillSelect(byId("mb-cpu"), (catalog.cpus || []).map(function(c){
+      return [c.id, c.label + " · " + c.cores + "C " + c.mem_channels + "ch " + c.ddr_gen];
+    }));
+    byId("mb-model").value = byId("model").value;
+    byId("mb-quant").value = byId("quant").value;
+    // Open on the widest memory bus, same reasoning as the lab: it is the part
+    // where the choice of DIMM layout matters most.
+    var cpus = catalog.cpus || [], cpu = cpus[0];
+    cpus.forEach(function(c){ if(cpu && c.mem_channels > cpu.mem_channels) cpu = c; });
+    if(cpu){
+      byId("mb-cpu").value = cpu.id;
+      byId("mb-dimm-count").value = String(Math.max(1, num(cpu.mem_channels) || 8));
+    }
+    mbFillSockets();
+    mbHints();
+
+    var form = byId("mb-rail");
+    form.addEventListener("input", onModelInput);
+    form.addEventListener("change", onModelInput);
+    form.addEventListener("submit", function(ev){ ev.preventDefault(); });
+    byId("mb-run").addEventListener("click", runModelBench);
+    byId("view-model").addEventListener("click", function(){ setView("model"); });
+    renderModel();
   }
 
   // ---- update ------------------------------------------------------
@@ -4238,6 +5213,8 @@ def app_html(mode: str = "server") -> str:
     });
     wireDesktopSaves();
     initLab();
+    initModel();
+    setView("model");     // the default screen is the model, not the alarm
     modelHint(); tokenHint(); run();
     checkForUpdate();
   }).catch(function(err){
@@ -4245,11 +5222,18 @@ def app_html(mode: str = "server") -> str:
     // what happened. The bridge failure carries its own remedy; anything else
     // gets the generic one.
     var msg = (err && err.message) ? err.message : String(err);
-    results.textContent = "";
-    var box = el("div", "note");
-    box.appendChild(el("p", "", msg.indexOf("브리지") >= 0
-      ? msg : ("카탈로그를 불러오지 못했다: " + msg)));
-    results.appendChild(box);
+    var text = msg.indexOf("브리지") >= 0 ? msg : ("카탈로그를 불러오지 못했다: " + msg);
+    // Every screen, not just the sizing one: the default view is the model
+    // screen now, and a window that only reported the failure on a hidden tab
+    // would still be sitting there claiming it was loading.
+    ["mb-results", "results", "lab-results"].forEach(function(id){
+      var host = document.getElementById(id);
+      if(!host) return;
+      host.textContent = "";
+      var box = el("div", "note");
+      box.appendChild(el("p", "", text));
+      host.appendChild(box);
+    });
     var empty = document.getElementById("empty");
     if(empty) empty.remove();
   });

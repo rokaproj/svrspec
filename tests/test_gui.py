@@ -1196,11 +1196,154 @@ def _stub_bench() -> types.ModuleType:
     return mod
 
 
+def _stub_modelbench() -> types.ModuleType:
+    """A stand-in for `svrspec.modelbench`, thin on purpose.
+
+    It reproduces the *shape* of the contract and the two monotonic facts the
+    screen is built to show -- batching trades per-sequence speed for total
+    throughput, a longer context slows decode -- and nothing else. The physics
+    belongs to the real engine; asserting it here would only test the stub.
+
+    The one number it does not invent is `asm.decode_tps_single`, which already
+    carries the channel population of the assembled board. That is what lets the
+    GUI tests check that an under-populated build reaches this screen intact.
+    """
+
+    @dataclass(frozen=True)
+    class ThroughputPoint:
+        batch: int
+        ctx_tokens: int
+        prefill_tps: float
+        decode_tps_single: float
+        decode_tps_total: float
+        prefill_bound: str
+        decode_bound: str
+
+    @dataclass(frozen=True)
+    class ConcurrencyPoint:
+        users: int
+        ttft_s: float
+        decode_tps_each: float
+        response_s: float
+        total_tps: float
+
+    @dataclass(frozen=True)
+    class ResourceSplit:
+        phase: str
+        bandwidth_pct: float
+        compute_pct: float
+        bound_by: str
+        bytes_per_token: float
+        flops_per_token: float
+
+    @dataclass(frozen=True)
+    class TrainingVerdict:
+        kind: str
+        feasible: bool
+        memory_needed_gb: float
+        memory_available_gb: float
+        step_seconds: float | None
+        epoch_hours: float | None
+        reasons: list
+        gpu_comparison: str
+
+    @dataclass(frozen=True)
+    class ModelBench:
+        model_name: str
+        quant_id: str
+        hardware: str
+        throughput: list
+        concurrency: list
+        resources: list
+        training: list
+        memory_gb: float
+        uncertainty: float
+        notes: list
+        warnings: list
+
+    def bench_model(asm, *, batches=(1, 2, 4, 8, 16, 32),
+                    contexts=(512, 2048, 4096, 8192, 16384),
+                    users=(1, 2, 4, 8, 16, 32, 64), output_tokens=256,
+                    train_samples=10_000):
+        base = max(0.01, float(asm.decode_tps_single))
+        prefill = max(0.01, float(asm.prefill_tps))
+
+        throughput = []
+        for batch in batches:
+            for ctx in contexts:
+                single = base / (1.0 + ctx / 65_536.0) / (1.0 + (batch - 1) * 0.25)
+                throughput.append(ThroughputPoint(
+                    batch=batch, ctx_tokens=ctx, prefill_tps=prefill,
+                    decode_tps_single=single, decode_tps_total=single * batch,
+                    prefill_bound="compute",
+                    decode_bound="bandwidth" if batch < 4 else "compute",
+                ))
+
+        concurrency = []
+        for count in users:
+            each = base / (1.0 + (count - 1) * 0.6)
+            ttft = 250.0 * count / prefill
+            concurrency.append(ConcurrencyPoint(
+                users=count, ttft_s=ttft, decode_tps_each=each,
+                response_s=ttft + output_tokens / each, total_tps=each * count,
+            ))
+
+        resources = [
+            ResourceSplit("prefill", 11.0, 92.0, "compute", 1_180.0, 6.4e9),
+            ResourceSplit("decode", 96.0, 18.0, "bandwidth", 2.1e9, 6.4e9),
+        ]
+
+        available = float(asm.ram_total_gb)
+        weights_gb = float(asm.model.params_b) * 2.0
+        needs = {"full": weights_gb * 16.0, "lora": weights_gb * 1.4,
+                 "qlora": weights_gb * 0.5}
+        training = []
+        for kind in ("full", "lora", "qlora"):
+            need = needs[kind]
+            feasible = need <= available
+            training.append(TrainingVerdict(
+                kind=kind, feasible=feasible,
+                memory_needed_gb=need, memory_available_gb=available,
+                step_seconds=None if not feasible else 4.5,
+                epoch_hours=None if not feasible else 12.0,
+                reasons=(
+                    [f"{need:.0f}GB가 필요한데 {available:.0f}GB만 장착했다."]
+                    if not feasible else ["장착 메모리 안에 들어간다."]
+                ) + ["학습 계수는 카탈로그에 근거가 없는 추정이다."],
+                gpu_comparison=f"GPU 1장(80GB)이면 {kind}는 수 시간 규모다.",
+            ))
+
+        return ModelBench(
+            model_name=asm.model.name, quant_id=asm.quant.id,
+            hardware=f"{asm.cpu.vendor} {asm.cpu.model} × {asm.vm.sockets}소켓",
+            throughput=throughput, concurrency=concurrency,
+            resources=resources, training=training,
+            memory_gb=float(asm.ram_used_gb), uncertainty=float(asm.uncertainty),
+            notes=["실제 모델을 실행하지 않았다 — 카탈로그 물리로 예측했다.",
+                   "학습 축은 계수 근거가 없는 추정이다."],
+            warnings=["대역폭 효율 계수가 추정값이다."],
+        )
+
+    def to_csv(bench, section):  # pragma: no cover - unused by the GUI
+        raise NotImplementedError
+
+    mod = types.ModuleType("svrspec.modelbench")
+    mod.ThroughputPoint = ThroughputPoint
+    mod.ConcurrencyPoint = ConcurrencyPoint
+    mod.ResourceSplit = ResourceSplit
+    mod.TrainingVerdict = TrainingVerdict
+    mod.ModelBench = ModelBench
+    mod.bench_model = bench_model
+    mod.to_csv = to_csv
+    return mod
+
+
 def _install_engines(monkeypatch) -> None:
     """Real engines where they exist, stand-ins where they do not."""
     for name, build in (("svrspec.lab", _stub_lab),
                         ("svrspec.loadgen", _stub_loadgen),
-                        ("svrspec.bench", _stub_bench)):
+                        ("svrspec.bench", _stub_bench),
+                        ("svrspec.modelbench", _stub_modelbench)):
         if importlib.util.find_spec(name) is None:
             monkeypatch.setitem(sys.modules, name, build())
 
@@ -1599,3 +1742,409 @@ def test_a_boot_failure_clears_the_loading_placeholder():
     page = app_html("server")
     assert 'id="empty"' in page
     assert "empty.remove()" in page
+    # The default screen is the model one now, so the failure has to land there
+    # too -- reporting it only on a hidden tab is the same bug wearing a hat.
+    assert '["mb-results", "results", "lab-results"]' in page
+
+
+# --------------------------------------------------------------------------
+# Model performance: three tabs, model performance first
+# --------------------------------------------------------------------------
+#
+# The complaint this answers: the tool had grown into one application -- alarm
+# load -- and had no screen for the question underneath it, "put this model on
+# this server and what does it do". So: three tabs, the model one in front, and
+# everything that already existed rehoused rather than dropped.
+
+
+def _mb(cat, request, raw=None):
+    from svrspec.gui import modelbench_payload
+
+    merged = {**request, **(raw or {})}
+    return modelbench_payload(cat, _params(merged), merged["cpu"], merged)
+
+
+def test_the_default_view_is_model_performance():
+    """Not the alarm screen. That was the whole point of the rework."""
+    assert '<main id="model">' in SERVER_HTML
+    assert '<main id="size" hidden>' in SERVER_HTML
+    assert '<main id="lab" hidden>' in SERVER_HTML
+    assert '<button id="view-model" type="button" aria-pressed="true">모델 성능' in SERVER_HTML
+    for other in ("view-size", "view-lab"):
+        assert re.search(rf'id="{other}"[^>]*aria-pressed="false"', SERVER_HTML), other
+    assert 'setView("model")' in SERVER_HTML
+
+
+def test_the_three_tabs_are_the_ones_the_structure_asked_for():
+    nav = SERVER_HTML.split('<nav class="views"')[1].split("</nav>")[0]
+    assert "모델 성능" in nav
+    assert "자원" in nav
+    assert "적용 사례: 관제 알람" in nav
+    # Toggles, not links: assistive tech has to be able to read the state.
+    assert nav.count("aria-pressed") == 3
+
+
+def test_nothing_that_already_existed_disappeared():
+    """Rehoused, not removed. Every earlier screen still has to be reachable."""
+    for marker in (
+        '<main id="size"',            # sizing: tiers, candidate table, downloads
+        "권장 스펙",
+        "CPU 후보",
+        "토큰 전달 시뮬레이터",
+        "작업관리자",
+        "개수별 리소스",
+        "과부하 지점",
+        '<main id="lab"',             # the virtual lab and its alarm load bench
+        "가상 서버 조립",
+        "부하 테스트",
+        "효율 계수",
+    ):
+        assert marker in SERVER_HTML, marker
+    # And the rails and result columns of all three screens are still wired.
+    for host in ("mb-results", "results", "lab-results"):
+        assert f'id="{host}"' in SERVER_HTML, host
+    for rail in ("mb-rail", "rail", "lab-rail"):
+        assert f'id="{rail}"' in SERVER_HTML, rail
+
+
+def test_the_page_measures_a_model_only_from_the_button():
+    """Same guard, same reason as the capacity search and the load bench.
+
+    Two mentions each: the transport plus its single caller, and the handler
+    plus the click that wires it. A third would mean the grid started
+    recomputing on every keystroke.
+    """
+    assert SERVER_HTML.count("askModelBench") == 2
+    assert SERVER_HTML.count("runModelBench") == 2
+    assert 'byId("mb-run").addEventListener("click", runModelBench)' in SERVER_HTML
+
+
+def test_the_desktop_page_degrades_when_the_bridge_has_no_modelbench_call():
+    """The packaged bridge is a fixed surface; an older installer must not throw."""
+    assert "window.pywebview.api.modelbench" in DESKTOP_HTML
+    assert "데스크톱 빌드에는 모델 성능 측정이 연결되어 있지 않다" in DESKTOP_HTML
+
+
+def test_every_model_screen_control_carries_a_visible_label():
+    ids = set(re.findall(r'<(?:input|select)[^>]*\bid="(mb-[^"]+)"', SERVER_HTML))
+    labelled = set(re.findall(r'<label[^>]*\bfor="([^"]+)"', SERVER_HTML))
+    assert len(ids) >= 7
+    assert not (ids - labelled)
+
+
+def test_the_model_screen_shows_all_four_axes():
+    for section in ("추론 처리량", "동시 사용자", "연산 자원 분해", "학습·파인튜닝"):
+        assert section in SERVER_HTML, section
+    # The batch trade-off and the context cost are stated, not left to be
+    # inferred from the grid.
+    assert "배치는 처리량을 사고 응답 속도를 판다" in SERVER_HTML
+    assert "KV 캐시를 다시 읽어야 하기 때문이다" in SERVER_HTML
+    # Prefill and decode read against each other, which is the point.
+    assert "기계의 반대쪽이다" in SERVER_HTML
+
+
+def test_the_concurrency_curve_marks_the_unreadable_point():
+    """"몇 명까지 쓸 만한가" is a threshold question, so the threshold is drawn."""
+    assert "readable_tps" in SERVER_HTML
+    assert "답답함" in SERVER_HTML and "쓸 만함" in SERVER_HTML   # colour + word
+    assert 'role: "img"' in SERVER_HTML
+    assert "읽기 편한 하한" in SERVER_HTML
+
+
+def test_the_training_refusal_shows_its_reasons_and_the_gpu_comparison():
+    """A bare "안 된다" is not a result anybody can act on."""
+    assert "t.reasons" in SERVER_HTML
+    assert "GPU 비교 · " in SERVER_HTML
+    assert "t.gpu_comparison" in SERVER_HTML
+    assert "엔진이 비교값을 내지 않았다" in SERVER_HTML     # never silently dropped
+    assert "학습 축의 계수는 카탈로그에 근거가 없다" in SERVER_HTML
+
+
+def test_modelbench_payload_carries_every_axis(cat, engines):
+    from svrspec.gui import MB_BATCHES, MB_CONTEXTS, MB_USERS
+
+    d = _mb(cat, FULL)
+    json.dumps(d, allow_nan=False)
+    assert d["blocked"] is None
+    for key in ("throughput", "concurrency", "resources", "training", "notes"):
+        assert d[key], key
+    assert d["warnings"] is not None
+    assert len(d["throughput"]) == len(MB_BATCHES) * len(MB_CONTEXTS)
+    assert len(d["concurrency"]) == len(MB_USERS)
+    assert d["model_name"] and d["quant_id"] and d["hardware"]
+    assert d["memory_gb"] is not None and d["uncertainty"] is not None
+
+    row = d["throughput"][0]
+    for key in ("batch", "ctx_tokens", "prefill_tps", "decode_tps_single",
+                "decode_tps_total", "prefill_bound_label", "decode_bound_label"):
+        assert key in row, key
+    point = d["concurrency"][0]
+    for key in ("users", "ttft_s", "decode_tps_each", "response_s", "total_tps",
+                "readable"):
+        assert key in point, key
+    assert {s["phase"] for s in d["resources"]} <= {"prefill", "decode"}
+    assert all(s["bound_label"] and s["phase_label"] for s in d["resources"])
+    assert {t["kind"] for t in d["training"]} == {"full", "lora", "qlora"}
+
+
+def test_the_training_verdict_never_arrives_without_its_grounds(cat, engines):
+    """AC: an infeasible verdict must carry reasons and a GPU comparison."""
+    d = _mb(cat, FULL)
+    for t in d["training"]:
+        assert t["verdict"] in ("가능", "불가")          # a word, not only a colour
+        assert isinstance(t["reasons"], list)
+        if not t["feasible"]:
+            assert t["reasons"], t["kind"]
+            assert t["gpu_comparison"], t["kind"]
+
+
+def test_an_under_populated_board_reaches_the_model_screen_intact(cat, engines):
+    """The lab's channel population has to survive into this payload.
+
+    Two DIMMs in an eight-channel board is the build the whole tool exists to
+    catch. If the model screen quoted full-bus numbers for it, it would be
+    advertising hardware nobody is buying.
+    """
+    starved = _mb(cat, STARVED)
+    full = _mb(cat, FULL)
+    assert starved["machine"]["channels"]["populated"] == 2
+    assert starved["throughput"][0]["decode_tps_single"] < \
+        full["throughput"][0]["decode_tps_single"]
+    assert "channels-underfilled" in {f["code"] for f in starved["findings"]}
+
+
+def test_a_build_that_cannot_be_ordered_is_refused_not_measured(cat, engines):
+    """An error-level finding means the numbers would be about fiction."""
+    d = _mb(cat, {**FULL, "dimm_count": 0})
+    assert d["ok"] is False
+    assert d["blocked"]
+    assert d["throughput"] == [] and d["training"] == []
+    assert d["findings"]
+
+
+def test_the_live_recompute_never_runs_a_model_bench(cat, engines, monkeypatch):
+    """Performance guard, server half.
+
+    The grid is dozens of predictions plus a training verdict. The two payloads
+    that do run on every input change must not touch it.
+    """
+    import importlib
+
+    from svrspec.gui import resource_payload
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a model bench ran on the live recompute path")
+
+    engine = importlib.import_module("svrspec.modelbench")
+    monkeypatch.setattr(engine, "bench_model", explode)
+    assert size_payload(cat, _params(BASE_REQUEST))["candidates"]
+    assert resource_payload(cat, _params(BASE_REQUEST), "test-amx-8ch")["rows"]
+    from svrspec.gui import lab_payload
+
+    assert lab_payload(cat, _params(FULL), FULL["cpu"])["channels"]
+
+
+def test_modelbench_clamps_the_training_sample_count():
+    from svrspec.gui import MODELBENCH_DEFAULTS, MODELBENCH_LIMITS, _mb_number
+
+    low, high = MODELBENCH_LIMITS["train_samples"]
+    assert _mb_number({"train_samples": 10**12}, "train_samples") == high
+    assert _mb_number({"train_samples": -1}, "train_samples") == low
+    assert _mb_number({"train_samples": "많이"}, "train_samples") == \
+        MODELBENCH_DEFAULTS["train_samples"]
+    assert low <= MODELBENCH_DEFAULTS["train_samples"] <= high
+
+
+def test_no_model_axis_leaks_an_infinity_to_the_browser():
+    """`allow_nan=False` rejects `Infinity`, and `JSON.parse` refuses it too.
+
+    "이 서버에서는 끝나지 않는다" is a real answer for an epoch time, and the
+    engine is entitled to express it as an infinity. It has to cross the wire as
+    null, and the row builders are where that happens.
+    """
+    from types import SimpleNamespace
+
+    from svrspec.gui import _concurrency_row, _throughput_row, _training_row
+
+    inf, nan = float("inf"), float("nan")
+    t = _training_row(SimpleNamespace(
+        kind="full", feasible=False, memory_needed_gb=inf, memory_available_gb=nan,
+        step_seconds=inf, epoch_hours=inf, reasons=["메모리가 모자란다."],
+        gpu_comparison="GPU 1장이면 몇 시간이다.",
+    ))
+    assert t["memory_needed_gb"] is None and t["epoch_hours"] is None
+    assert t["step_seconds"] is None and t["memory_available_gb"] is None
+    assert t["reasons"] and t["gpu_comparison"]
+
+    p = _throughput_row(SimpleNamespace(
+        batch=1, ctx_tokens=512, prefill_tps=inf, decode_tps_single=nan,
+        decode_tps_total=-inf, prefill_bound="compute", decode_bound="bandwidth",
+    ))
+    c = _concurrency_row(SimpleNamespace(
+        users=1, ttft_s=inf, decode_tps_each=nan, response_s=inf, total_tps=nan,
+    ))
+    assert p["prefill_tps"] is None and c["ttft_s"] is None
+    # A speed that is not a number cannot be called readable.
+    assert c["readable"] is False
+    for row in (t, p, c):
+        json.dumps(row, allow_nan=False)
+
+
+def test_unknown_bound_names_are_passed_through_not_dropped():
+    """A ceiling this layer has no Korean word for still has to be reported."""
+    from types import SimpleNamespace
+
+    from svrspec.gui import MB_BOUND_LABEL, _split_row, _throughput_row
+
+    assert "core-bandwidth" in MB_BOUND_LABEL   # perf reports it; the alarm view folds it
+    row = _throughput_row(SimpleNamespace(
+        batch=1, ctx_tokens=512, prefill_tps=1.0, decode_tps_single=1.0,
+        decode_tps_total=1.0, prefill_bound="something-new", decode_bound="compute",
+    ))
+    assert row["prefill_bound_label"] == "something-new"
+    split = _split_row(SimpleNamespace(
+        phase="prefill", bandwidth_pct=1.0, compute_pct=2.0, bound_by="core-bandwidth",
+        bytes_per_token=1.0, flops_per_token=2.0,
+    ))
+    assert split["bound_label"] == "코어당 대역폭"
+    assert split["advice"], "a named bottleneck without advice is half an answer"
+
+
+def test_modelbench_route_round_trip(lab_server):
+    status, d = _post(lab_server + "/api/modelbench", {**FULL, "train_samples": 5_000})
+    assert status == 200
+    assert d["train_samples"] == 5_000
+    assert d["throughput"] and d["concurrency"] and d["training"]
+    assert d["blocked"] is None
+
+
+def test_modelbench_route_rejects_an_unknown_cpu(lab_server):
+    status, d = _post(lab_server + "/api/modelbench", {**FULL, "cpu": "nope"})
+    assert status == 400
+    assert "unknown cpu id" in d["error"]
+
+
+def test_modelbench_route_survives_a_garbage_sample_count(lab_server):
+    from svrspec.gui import MODELBENCH_DEFAULTS
+
+    status, d = _post(lab_server + "/api/modelbench",
+                      {**FULL, "train_samples": "아무거나"})
+    assert status == 200
+    assert d["train_samples"] == MODELBENCH_DEFAULTS["train_samples"]
+
+
+def test_an_unroutable_model_path_is_still_404(lab_server):
+    status, _ = _post(lab_server + "/api/modelbenchmark", {})
+    assert status == 404
+
+
+def test_the_model_tables_scroll_inside_their_own_box():
+    """Wide content scrolls in its own box; the page body never scrolls sideways."""
+    grid = SERVER_HTML.split("function mbThroughput(d){")[1].split("function mbTradeoff")[0]
+    assert 'el("div", "scroll")' in grid
+    users = SERVER_HTML.split("function mbConcurrency(d){")[1].split("function mbGauge")[0]
+    assert 'el("div", "scroll")' in users
+
+
+# --------------------------------------------------------------------------
+# Generation tok/s and TTFT: the two numbers a person feels
+# --------------------------------------------------------------------------
+
+
+def test_the_top_summary_leads_with_generation_speed_and_ttft():
+    """These two are what somebody feels, so they are the first thing drawn."""
+    assert "mbSummaryTiles" in SERVER_HTML
+    assert 'el("div", "mb-head")' in SERVER_HTML
+    # Drawn into the head card, above every table on the screen.
+    head = SERVER_HTML.split("function renderModel(){")[1] \
+                      .split("host.appendChild(card);")[0]
+    assert "mbSummaryTiles(d)" in head
+    assert head.index("mbSummaryTiles(d)") < head.index("추론 시 실사용")
+    # The comfort threshold is stated in a sentence, not only drawn as a line.
+    assert "기다린다는 느낌" in SERVER_HTML
+
+
+def test_the_felt_numbers_are_labelled_in_both_languages():
+    """Two kinds of reader: one says TTFT, one says 첫 토큰까지. Both get both."""
+    for label in ("생성 속도(Generation tok/s)", "첫 토큰까지(TTFT)",
+                  "전체 합계(Total tok/s)", "프롬프트 처리(Prefill tok/s)"):
+        assert label in SERVER_HTML, label
+    # Every metric the grid can draw is a (engine key, 한국어(원어), unit) triple,
+    # so a raw field name cannot reach a column header by accident.
+    block = SERVER_HTML.split("var MB_METRICS = [")[1].split("\n  ];")[0]
+    for key in ("decode_tps_single", "decode_tps_total", "ttft_s", "prefill_tps"):
+        assert key in block, key
+    assert block.count("[") == 4
+
+
+def test_generation_speed_is_never_quoted_as_the_server_total():
+    """The one confusion this screen exists to prevent, spelled out on screen."""
+    assert "배치는 처리량을 사고 응답 속도를 판다" in SERVER_HTML
+    assert "한 사용자가 보는 " in SERVER_HTML
+    assert "서버 전체 합계 — 한 사용자가 보는 속도가 아니다" in SERVER_HTML
+
+
+def test_the_summary_carries_the_two_felt_numbers_and_their_condition(cat, engines):
+    d = _mb(cat, FULL)
+    s = d["summary"]
+    for key in ("gen_tps", "ttft_s", "total_tps", "batch", "ctx_tokens",
+                "condition", "readable"):
+        assert key in s, key
+    assert s["gen_tps"] and s["ttft_s"] and s["total_tps"]
+    # A headline number without its condition is a number nobody can check.
+    assert s["batch"] == 1
+    assert "배치 1" in s["condition"]
+    assert f"{s['ctx_tokens']:,}" in s["condition"]
+    assert str(d["output_tokens"]) in s["condition"]
+    # The batched contrast travels with it: the total climbs, the per-user speed
+    # falls, and a longer context costs generation speed.
+    assert s["busy_total_tps"] >= s["total_tps"]
+    assert s["busy_gen_tps"] <= s["gen_tps"]
+    assert s["long_gen_tps"] <= s["gen_tps"]
+
+
+def test_a_blocked_build_still_answers_with_an_empty_summary(cat, engines):
+    """The page reads `summary` before it reads `blocked`; it must exist either way."""
+    d = _mb(cat, {**FULL, "dimm_count": 0})
+    assert d["blocked"]
+    assert d["summary"]["gen_tps"] is None and d["summary"]["ttft_s"] is None
+    json.dumps(d, allow_nan=False)
+
+
+def test_ttft_is_derived_when_the_engine_does_not_report_it():
+    """TTFT is the prompt over the prefill rate. A blank cell is not an option.
+
+    The field is being added on the engine side in this same wave, so this layer
+    prefers it where it exists and computes it where it does not -- and the
+    switch-over must not change what the page shows.
+    """
+    from types import SimpleNamespace
+
+    from svrspec.gui import _mb_ttft, _throughput_row
+
+    pt = SimpleNamespace(batch=1, ctx_tokens=2048, prefill_tps=1024.0,
+                         decode_tps_single=40.0, decode_tps_total=40.0,
+                         prefill_bound="compute", decode_bound="bandwidth")
+    assert _mb_ttft(pt) == pytest.approx(2.0)
+    assert _throughput_row(pt)["ttft_s"] == pytest.approx(2.0)
+
+    pt.ttft_s = 0.75                     # the engine's own figure wins
+    assert _mb_ttft(pt) == pytest.approx(0.75)
+    assert _throughput_row(pt)["ttft_s"] == pytest.approx(0.75)
+
+    # A machine that processes nothing has no TTFT to quote, and "infinity" is
+    # not something JSON.parse will accept.
+    stalled = _throughput_row(SimpleNamespace(
+        batch=1, ctx_tokens=512, prefill_tps=0.0, decode_tps_single=1.0,
+        decode_tps_total=1.0, prefill_bound="none", decode_bound="none",
+    ))
+    assert stalled["ttft_s"] is None
+
+
+def test_every_grid_row_carries_a_ttft(cat, engines):
+    d = _mb(cat, FULL)
+    assert all(r["ttft_s"] is not None for r in d["throughput"])
+    # Longer prompt, longer wait -- at a fixed batch.
+    first = [r for r in d["throughput"] if r["batch"] == 1]
+    waits = [r["ttft_s"] for r in sorted(first, key=lambda r: r["ctx_tokens"])]
+    assert waits == sorted(waits)

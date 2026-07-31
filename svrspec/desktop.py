@@ -130,6 +130,26 @@ class Api:
         except (CatalogError, ValueError, TypeError, KeyError) as exc:
             return {"error": str(exc)}
 
+    def modelbench(self, params: dict | str) -> dict:
+        """What this model actually does on this machine.
+
+        The question underneath every other screen: how many tokens per second,
+        how many concurrent users, what runs out first, and whether the box can
+        train at all. The alarm pipeline is one application of that answer, not
+        the answer itself.
+        """
+        raw = json.loads(params) if isinstance(params, str) else (params or {})
+        if not isinstance(raw, dict):
+            return {"error": "expected an object of parameters"}
+        try:
+            from .gui import _params, modelbench_payload
+
+            return modelbench_payload(
+                self._catalog, _params(raw), str(raw.get("cpu", "")), raw
+            )
+        except (CatalogError, ValueError, TypeError, KeyError) as exc:
+            return {"error": str(exc)}
+
     def update_check(self) -> dict:
         from .gui import update_payload
 
