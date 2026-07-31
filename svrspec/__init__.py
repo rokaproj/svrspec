@@ -6,6 +6,6 @@ headroom is left. Stdlib only, so it runs on the air-gapped CPU+RAM box it is
 sizing for.
 """
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 __all__ = ["__version__"]
