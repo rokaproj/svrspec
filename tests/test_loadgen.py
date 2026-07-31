@@ -266,23 +266,30 @@ def test_params_survive_json():
 def test_the_generators_assumptions_are_carried_forward(kind):
     _, profile = build_load(kind)
     joined = " | ".join(profile.notes)
-    assert "심각도 분포는 가정" in joined, profile.notes
-    assert "장비·사이트 목록은 가정" in joined, profile.notes
+    assert "심각도 분포" in joined and "가정" in joined, profile.notes
+    assert "장비" in joined and "사이트" in joined, profile.notes
 
 
 @pytest.mark.parametrize("kind", ["ramp", "spike", "soak"])
 def test_a_note_that_stopped_being_true_is_dropped(kind):
-    """`mockdata`'s business-hours note describes placement this module replaced."""
+    """`mockdata`'s business-hours note describes placement this module replaced.
+
+    Compared against the note replay actually carries rather than a quoted
+    string, so rewording the caveat cannot silently turn this test green.
+    """
+    _, replay = build_load("replay")
+    stale = next(n for n in replay.notes if "시간대 분포" in n)
+
     _, profile = build_load(kind)
-    joined = " | ".join(profile.notes)
-    assert "하루 안의 시간대 분포는 실측이 아니다" not in joined, profile.notes
-    assert "부하율 곡선에서 다시 뽑았다" in joined, profile.notes
+    assert stale not in profile.notes, profile.notes
+    # ...and it is replaced by one describing where the times really came from.
+    assert any(kind in n and "곡선" in n for n in profile.notes), profile.notes
 
 
 def test_replay_keeps_the_business_hours_note():
+    """Replay did not move the arrivals, so the generator's caveat still holds."""
     _, profile = build_load("replay")
-    joined = " | ".join(profile.notes)
-    assert "하루 안의 시간대 분포는 실측이 아니다" in joined
+    assert any("시간대 분포" in n and "가정" in n for n in profile.notes), profile.notes
 
 
 # --------------------------------------------------------------------------

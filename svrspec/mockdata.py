@@ -712,13 +712,13 @@ def _assumption_notes(
     per_storm: int,
 ) -> list[str]:
     start_h, end_h = business_hours
+    # One line each. These travel with every run and get read every time, so
+    # the reason belongs in the module docstring and only the claim belongs here.
     notes = [
-        f"하루 안의 시간대 분포는 실측이 아니다 — 원본 데이터는 일별 합계뿐이고, "
-        f"{start_h}~{end_h}시에 {business_share:.0%}를 두는 업무시간 가중은 가정이다",
-        f"스톰 규모({storm_size}건/{storm_window_s:.0f}초)와 상관 구조는 가정이다 "
-        f"— 원본에 상관·중복 정보가 없다",
-        "심각도 분포는 가정이다 — 원본에 심각도 집계가 없다",
-        "장비·사이트 목록은 가정이다 — 원본에 장비 인벤토리가 없다",
+        f"시간대 분포는 가정이다 — {start_h}~{end_h}시에 {business_share:.0%} "
+        f"(원본은 일별 합계뿐이다)",
+        f"스톰 규모({storm_size}건/{storm_window_s:.0f}초)와 상관 구조는 가정이다",
+        "심각도 분포·장비·사이트 목록은 가정이다",
     ]
     if storms_per_day > 0 and storms_made == 0:
         notes.append(

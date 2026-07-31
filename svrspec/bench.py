@@ -648,44 +648,40 @@ def _notes(
     breach: dict | None,
     workload: Workload,
 ) -> list[str]:
-    """What a reader has to know before trusting the numbers above."""
-    notes = list(getattr(profile, "notes", []) or [])
+    """What this run adds to what the profile already said.
+
+    Deliberately does *not* repeat `profile.notes`. Both lists reach the page,
+    and copying one into the other made every caveat appear twice -- ten lines
+    of small print where five would do, which is how small print gets skipped.
+    The profile owns the caveats about the load; this owns the ones about the
+    run.
+
+    Short sentences on purpose. A caveat nobody finishes reading is not a
+    caveat.
+    """
+    notes: list[str] = []
 
     uncertainty = float(getattr(asm, "uncertainty", 0.0) or 0.0)
     if uncertainty > 0:
-        notes.append(
-            f"모든 소요 시간은 계산값이다 — 측정이 아니다. 처리량 예측의 오차는 "
-            f"±{uncertainty:.0%}이고, 그만큼 이 결과 전체가 움직인다"
-        )
+        notes.append(f"모든 시간은 계산값이다 — 측정이 아니고 오차가 ±{uncertainty:.0%}다")
     if ceilings.bandwidth_confidence == "estimate":
-        notes.append("대역폭 천장이 추정 계수 위에 서 있다 — 사용률 %의 절대값은 신뢰하지 말 것")
+        notes.append("대역폭 천장이 추정값이라 사용률 %의 절대값은 믿지 마라")
     if ceilings.compute_confidence == "estimate":
-        notes.append("연산 천장이 추정 계수 위에 서 있다 — 사용률 %의 절대값은 신뢰하지 말 것")
+        notes.append("연산 천장이 추정값이라 사용률 %의 절대값은 믿지 마라")
 
-    notes.append(
-        "프레임 안의 토큰 처리율은 각 요청의 prefill·decode 구간에 균등 분배해 복원한 값이다 "
-        "— 점유·큐·지연은 정확하고, 프레임 단위 토큰율만 근사다"
-    )
+    notes.append("큐·점유·지연은 정확하고, 프레임 단위 토큰율만 근사다")
 
     declared = float(getattr(profile, "span_s", 0.0) or 0.0)
     if span_s > declared + 1.0:
-        notes.append(
-            f"부하가 끝난 뒤에도 {(span_s - declared) / 60:.1f}분 더 일했다 "
-            f"— 백로그가 부하 구간을 넘겼다"
-        )
+        notes.append(f"부하가 끝난 뒤 {(span_s - declared) / 60:.0f}분 더 일했다 — 밀린 것이 있다")
     if stats.dropped:
-        notes.append(
-            f"{stats.dropped:,}건이 큐 상한에 걸려 버려졌다 — p95는 살아남은 건들만의 값이다"
-        )
+        notes.append(f"{stats.dropped:,}건은 큐가 차서 버렸다 — p95는 살아남은 것들의 값이다")
     if breach is None:
-        notes.append(
-            f"이 부하 전 구간에서 p95가 SLA {workload.sla_seconds:g}초를 넘지 않았다 "
-            f"— 무너지는 지점은 이 부하 범위 밖에 있다"
-        )
+        notes.append(f"이 구간에서는 p95가 SLA {workload.sla_seconds:g}초를 넘지 않았다")
     else:
         notes.append(
-            f"부하율 {breach['offered_rate']:,.0f}건/일 지점에서 p95가 "
-            f"SLA {workload.sla_seconds:g}초를 넘었다 (p95 {breach['p95_s']:.1f}초)"
+            f"부하 {breach['offered_rate']:,.0f}건/일에서 p95 {breach['p95_s']:.0f}초 — "
+            f"SLA {workload.sla_seconds:g}초를 넘겼다"
         )
     return notes
 

@@ -158,7 +158,8 @@ def test_frames_conserve_arrivals_even_when_the_queue_sheds(catalog):
     assert result.stats.dropped > 0
     assert sum(f.arrived for f in result.frames) == result.stats.received
     assert sum(f.delivered for f in result.frames) == result.stats.delivered
-    assert any("버려졌다" in note for note in result.notes)
+    assert any(str(result.stats.dropped) in note and "버" in note
+               for note in result.notes), result.notes
 
 
 def test_every_arrival_and_delivery_lands_in_the_frame_it_happened_in(catalog):
@@ -222,7 +223,7 @@ def test_frames_cover_a_run_that_outlived_its_load(catalog):
     )
     last = result.frames[-1]
     assert last.t_s > result.profile.span_s, last.t_s
-    assert any("백로그" in note for note in result.notes)
+    assert any("부하가 끝난 뒤" in note for note in result.notes), result.notes
     assert sum(f.delivered for f in result.frames) == result.stats.delivered
 
 
@@ -432,10 +433,19 @@ def test_findings_are_passed_through_untouched(catalog):
     assert result.findings == [marker]
 
 
-def test_the_profile_notes_are_carried_into_the_result(catalog):
+def test_the_result_does_not_repeat_the_profile_notes(catalog):
+    """Both lists reach the page, so copying one into the other duplicates it.
+
+    This test used to assert the opposite. The page renders `profile.notes` and
+    `result.notes` one after the other, so carrying the profile's caveats into
+    the result printed every one of them twice -- ten lines of small print where
+    five would do, which is how small print stops being read. The profile owns
+    the caveats about the load; the result owns the ones about the run.
+    """
     result, _ = _bench(catalog, "ramp")
-    for note in result.profile.notes:
-        assert note in result.notes
+    assert result.profile.notes, "the profile must still carry its own caveats"
+    assert result.notes, "and the run must still carry its own"
+    assert not (set(result.profile.notes) & set(result.notes))
 
 
 def test_ceilings_are_derived_from_the_assembly_when_not_supplied(catalog):

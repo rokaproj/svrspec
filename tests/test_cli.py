@@ -414,7 +414,7 @@ def test_mock_reproduces_the_measured_day(capsys):
     out = capsys.readouterr().out
     assert "359" in out
     # The assumptions have to travel with the data.
-    assert "시간대 분포는 실측이 아니다" in out
+    assert "시간대 분포는 가정이다" in out
 
 
 def test_mock_writes_jsonl_that_round_trips(tmp_path, capsys):

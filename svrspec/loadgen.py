@@ -208,9 +208,7 @@ def _replay(seed: int, settings: dict) -> tuple[list[Alarm], LoadProfile]:
     params["storms"] = day.storms
 
     notes = list(day.notes)
-    notes.append(
-        "실측 하루를 그대로 재생한다 — 도착 시각도 알람 내용도 생성기가 낸 값 그대로다"
-    )
+    notes.append("실측 하루를 그대로 재생한다 — 도착 시각도 알람 내용도 손대지 않았다")
     profile = LoadProfile(
         kind="replay",
         label=f"실측 재생 {day.date} · {len(day.alarms):,}건 · 스톰 {day.storms}회",
@@ -508,9 +506,8 @@ def _notes(
 ) -> list[str]:
     """Carry the generator's assumptions forward, minus the ones now untrue."""
     notes = [
-        f"도착 시각은 {kind} 부하율 곡선에서 다시 뽑았다 — 실측 시간대 분포가 아니다. "
-        f"알람 내용·심각도·상관 구조는 실측 기반 생성기 값 그대로다",
-        f"{span_s / 3600:.0f}시간 동안 {total:,}건 — 부하율 곡선을 적분한 기대값이다",
+        f"도착 시각은 {kind} 곡선에서 뽑았다 — 실측 시간대 분포가 아니다",
+        f"{span_s / 3600:.0f}시간 {total:,}건 — 부하율 곡선의 적분값이다",
     ]
     for note in source_notes:
         if any(marker in note for marker in _STALE_NOTE_MARKERS):
@@ -519,17 +516,13 @@ def _notes(
             continue
         notes.append(note)
 
+    # Why the storm decision is stated at all: it changes what the result means.
+    # Kept to one line each -- the reasoning belongs in the module docstring,
+    # not in front of every reader of every run.
     if with_storms:
-        notes.append(
-            "급증 프로파일에는 스톰을 넣는다 — 급증 구간에서 상관 알람이 몰릴 때 "
-            "버티는지가 이 프로파일이 묻는 것이다"
-        )
+        notes.append("스톰을 넣는다 — 급증에 상관 알람이 겹칠 때 버티는지를 본다")
     else:
-        notes.append(
-            f"{kind} 프로파일에는 스톰을 넣지 않는다 — 이 프로파일은 부하율 하나만 "
-            "움직여서 무너지는 지점을 찾는 도구인데, 스톰이 섞이면 부하율 때문에 "
-            "무너졌는지 마침 그 순간 스톰이 겹쳐서 무너졌는지 구분할 수 없다"
-        )
+        notes.append(f"{kind}에는 스톰을 넣지 않는다 — 부하율만 움직여야 원인이 분명해진다")
     return notes
 
 
