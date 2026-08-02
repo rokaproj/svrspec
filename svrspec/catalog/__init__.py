@@ -16,7 +16,8 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from types import UnionType
+from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from ..types import (
     VALID_CONFIDENCE,
@@ -48,6 +49,7 @@ def _coerce(cls: type[T], row: dict[str, Any], where: str) -> T:
         raise TypeError(f"{cls} is not a dataclass")
 
     spec = {f.name: f for f in fields(cls)}
+    annotations = get_type_hints(cls)
     unknown = set(row) - set(spec)
     if unknown:
         raise CatalogError(f"{where}: unknown field(s) {sorted(unknown)}")
@@ -58,8 +60,9 @@ def _coerce(cls: type[T], row: dict[str, Any], where: str) -> T:
 
     kwargs: dict[str, Any] = {}
     for name, value in row.items():
-        f = spec[name]
-        kwargs[name] = _convert(f.type, value, f"{where}.{name}")
+        kwargs[name] = _convert(
+            annotations.get(name, spec[name].type), value, f"{where}.{name}"
+        )
     return cls(**kwargs)  # type: ignore[return-value]
 
 
@@ -70,15 +73,61 @@ def _is_required(f: Any) -> bool:
 
 
 def _convert(annotation: Any, value: Any, where: str) -> Any:
-    """Minimal annotation-driven coercion for the shapes we actually use."""
-    text = annotation if isinstance(annotation, str) else getattr(annotation, "__name__", str(annotation))
+    """Validate and minimally coerce the JSON shapes used by the catalogues."""
+    origin = get_origin(annotation)
+    args = get_args(annotation)
 
-    if "tuple" in text and isinstance(value, list):
-        return tuple(value)
-    if text.startswith("int") and isinstance(value, bool):
-        raise CatalogError(f"{where}: expected int, got bool")
-    if text.startswith("float") and isinstance(value, int) and not isinstance(value, bool):
+    if origin in (Union, UnionType):
+        if value is None and type(None) in args:
+            return None
+        for option in args:
+            if option is type(None):
+                continue
+            try:
+                return _convert(option, value, where)
+            except CatalogError:
+                continue
+        raise CatalogError(f"{where}: value has an invalid type")
+
+    if origin is list:
+        if not isinstance(value, list):
+            raise CatalogError(f"{where}: expected list, got {type(value).__name__}")
+        item_type = args[0] if args else Any
+        return [_convert(item_type, item, f"{where}[{i}]") for i, item in enumerate(value)]
+
+    if origin is tuple:
+        if not isinstance(value, (list, tuple)):
+            raise CatalogError(f"{where}: expected tuple, got {type(value).__name__}")
+        if len(args) == 2 and args[1] is Ellipsis:
+            types = [args[0]] * len(value)
+        else:
+            types = list(args)
+            if len(types) != len(value):
+                raise CatalogError(f"{where}: expected {len(types)} values, got {len(value)}")
+        return tuple(
+            _convert(kind, item, f"{where}[{i}]")
+            for i, (kind, item) in enumerate(zip(types, value))
+        )
+
+    if annotation is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise CatalogError(f"{where}: expected int, got {type(value).__name__}")
+        return value
+    if annotation is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise CatalogError(f"{where}: expected float, got {type(value).__name__}")
         return float(value)
+    if annotation is str:
+        if not isinstance(value, str):
+            raise CatalogError(f"{where}: expected str, got {type(value).__name__}")
+        return value
+    if annotation is bool:
+        if not isinstance(value, bool):
+            raise CatalogError(f"{where}: expected bool, got {type(value).__name__}")
+        return value
+    if annotation is Any:
+        return value
+
     return value
 
 

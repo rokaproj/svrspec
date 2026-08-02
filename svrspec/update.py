@@ -92,10 +92,16 @@ def _get(url: str, timeout: float, accept: str = "application/json") -> bytes:
     )
     context = ssl.create_default_context()
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
-        length = int(response.headers.get("Content-Length") or 0)
+        try:
+            length = int(response.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
         if length > MAX_ASSET_BYTES:
             raise UpdateError(f"내려받을 파일이 너무 크다: {length:,} 바이트")
-        return response.read(MAX_ASSET_BYTES + 1)
+        blob = response.read(MAX_ASSET_BYTES + 1)
+        if len(blob) > MAX_ASSET_BYTES:
+            raise UpdateError(f"내려받은 파일이 너무 크다: {MAX_ASSET_BYTES:,} 바이트를 넘었다")
+        return blob
 
 
 def check(timeout: float = DEFAULT_TIMEOUT) -> Release | None:
@@ -164,6 +170,11 @@ def download(
         raise UpdateError(
             f"릴리스에 Windows 설치 파일이 없다 — {release.page_url} 를 확인해 주세요."
         )
+
+    if Path(name).is_absolute() or Path(name).name != name:
+        raise UpdateError(f"설치 파일 이름은 경로가 아닌 파일 이름이어야 한다: {name!r}")
+    if name not in release.assets:
+        raise UpdateError(f"릴리스에 {name} 의 내려받기 주소가 없다")
 
     expected = _expected_sha256(release, name, timeout=min(timeout, 30.0))
 

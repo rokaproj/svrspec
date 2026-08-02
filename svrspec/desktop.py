@@ -70,8 +70,8 @@ class Api:
         return catalog_payload(self._catalog)
 
     def size(self, params: dict | str) -> dict:
-        raw = json.loads(params) if isinstance(params, str) else (params or {})
-        if not isinstance(raw, dict):
+        raw = _object_params(params)
+        if raw is None:
             return {"error": "expected an object of parameters"}
         try:
             return size_payload(self._catalog, _params(raw))
@@ -80,8 +80,8 @@ class Api:
 
     def resources(self, params: dict | str) -> dict:
         """Task-manager view for one hardware build across alarm volumes."""
-        raw = json.loads(params) if isinstance(params, str) else (params or {})
-        if not isinstance(raw, dict):
+        raw = _object_params(params)
+        if raw is None:
             return {"error": "expected an object of parameters"}
         volumes = raw.get("volumes") or list(DEFAULT_VOLUMES)
         try:
@@ -100,8 +100,8 @@ class Api:
         seconds, where every other call here is milliseconds. The page runs it
         from a button and caches the result until the inputs change.
         """
-        raw = json.loads(params) if isinstance(params, str) else (params or {})
-        if not isinstance(raw, dict):
+        raw = _object_params(params)
+        if raw is None:
             return {"error": "expected an object of parameters"}
         try:
             from .gui import _axes, capacity_payload
@@ -120,8 +120,8 @@ class Api:
         DIMM layout should be visible while the operator is still choosing it,
         not after they have bought it.
         """
-        raw = json.loads(params) if isinstance(params, str) else (params or {})
-        if not isinstance(raw, dict):
+        raw = _object_params(params)
+        if raw is None:
             return {"error": "expected an object of parameters"}
         try:
             from .gui import _params, lab_payload
@@ -140,8 +140,8 @@ class Api:
         it is still a whole simulated day, so the page drives it from a button
         and replays the returned frames itself.
         """
-        raw = json.loads(params) if isinstance(params, str) else (params or {})
-        if not isinstance(raw, dict):
+        raw = _object_params(params)
+        if raw is None:
             return {"error": "expected an object of parameters"}
         try:
             from .gui import _params, bench_payload
@@ -160,8 +160,8 @@ class Api:
         train at all. The alarm pipeline is one application of that answer, not
         the answer itself.
         """
-        raw = json.loads(params) if isinstance(params, str) else (params or {})
-        if not isinstance(raw, dict):
+        raw = _object_params(params)
+        if raw is None:
             return {"error": "expected an object of parameters"}
         try:
             from .gui import _params, modelbench_payload
@@ -205,8 +205,10 @@ class Api:
     # -- files -----------------------------------------------------------
     def save_report(self, params: dict | str, fmt: str = "html") -> str:
         """Render a delivery artefact and ask the OS where to put it."""
-        raw = json.loads(params) if isinstance(params, str) else (params or {})
-        p = _params(raw if isinstance(raw, dict) else {})
+        raw = _object_params(params)
+        if raw is None:
+            return "error: expected an object of parameters"
+        p = _params(raw)
         try:
             model = self._catalog.model(p["model"])
             quant = self._catalog.quant(p["quant"])
@@ -278,6 +280,15 @@ def run(catalog: Catalog | None = None, debug: bool = False) -> int:
     threading.Thread(target=_rescue_if_dead, args=(api,), daemon=True).start()
     webview.start(debug=debug)
     return 0
+
+
+def _object_params(params: dict | str | None) -> dict | None:
+    """Decode a bridge argument without allowing malformed JSON to escape."""
+    try:
+        raw = json.loads(params) if isinstance(params, str) else (params or {})
+    except (TypeError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
 
 
 def _rescue_if_dead(api: Api) -> None:

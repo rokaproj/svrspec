@@ -55,6 +55,19 @@ def test_rejects_missing_required_field(tmp_path):
         load_models(path)
 
 
+def test_rejects_wrong_field_type(tmp_path):
+    path = _write(tmp_path, "models.json", {
+        "schema": "models/v1",
+        "entries": [{
+            "id": "x", "name": "X", "family": "F", "params_b": "1.0", "n_layer": 2,
+            "n_embd": 64, "n_head": 4, "n_kv_head": 4, "n_vocab": 100,
+            "ctx_train": 512,
+        }],
+    })
+    with pytest.raises(CatalogError, match="expected float"):
+        load_models(path)
+
+
 def test_rejects_duplicate_ids(tmp_path):
     row = {
         "id": "dup", "name": "X", "family": "F", "params_b": 1.0, "n_layer": 2,

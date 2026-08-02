@@ -75,6 +75,12 @@ def test_params_falls_back_on_garbage():
     assert p["sla_seconds"] == DEFAULTS["sla_seconds"]
 
 
+def test_params_parses_string_flags_instead_of_using_truthiness():
+    p = _params({"prompt_cache": "false", "only_pass": "0"})
+    assert p["prompt_cache"] is False
+    assert p["only_pass"] is False
+
+
 def test_params_defaults_are_all_inside_their_limits():
     for key, (low, high) in LIMITS.items():
         assert low <= DEFAULTS[key] <= high, key
@@ -372,7 +378,7 @@ def test_desktop_api_reports_bad_input_instead_of_raising():
 
     api = Api(Catalog(DATA))
     assert "error" in api.size({**BASE_REQUEST, "model": "nope"})
-    assert "error" in api.size("not json at all" if False else {"model": "nope"})
+    assert "error" in api.size("not json at all")
     assert "error" in api.size([1, 2, 3])
 
 

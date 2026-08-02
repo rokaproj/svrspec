@@ -322,6 +322,27 @@ def _workload_from(args) -> Workload:
     except ValueError:
         raise SystemExit(f"--storm 형식은 '개수/초' 이다 (받은 값: {args.storm!r})")
 
+    for flag, value, low in (
+        ("--alarms-per-day", args.alarms_per_day, 1),
+        ("--slots", args.slots, 1),
+        ("--alarm-tokens", args.alarm_tokens, 1),
+        ("--output-tokens", args.output_tokens, 1),
+        ("--prompt-tokens", args.prompt_tokens, 0),
+        ("--fewshot-tokens", args.fewshot_tokens, 0),
+        ("--storms-per-day", args.storms_per_day, 0),
+        ("--storm 의 크기", storm_size, 0),
+    ):
+        if value < low:
+            raise SystemExit(f"{flag} 는 {low} 이상이어야 한다 (받은 값: {value})")
+
+    for flag, value in (
+        ("--storm 의 창", storm_window),
+        ("--sla", args.sla),
+        ("--storm-drain-min", args.storm_drain_min),
+    ):
+        if value <= 0:
+            raise SystemExit(f"{flag} 는 0보다 커야 한다 (받은 값: {value})")
+
     return Workload(
         alarms_per_day=args.alarms_per_day,
         storm_size=storm_size,

@@ -305,6 +305,8 @@ def test_a_truncated_feed_is_refused_rather_than_half_read():
         from_jsonl("")
     with pytest.raises(ValueError):
         from_jsonl('{"record": "alarm", "id": "ALM-1"}')  # no day header
+    with pytest.raises(ValueError, match="객체"):
+        from_jsonl('{"record": "day"}\n[]')
 
 
 # --------------------------------------------------------------------------

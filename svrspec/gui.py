@@ -87,10 +87,26 @@ def _number(raw: dict, key: str) -> int:
     return max(low, min(high, value))
 
 
+def _flag(raw: dict, key: str, default: bool) -> bool:
+    value = raw.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def _params(raw: dict) -> dict:
     out = {k: _number(raw, k) for k in LIMITS}
-    out["prompt_cache"] = bool(raw.get("prompt_cache", True))
-    out["only_pass"] = bool(raw.get("only_pass", False))
+    out["prompt_cache"] = _flag(raw, "prompt_cache", True)
+    out["only_pass"] = _flag(raw, "only_pass", False)
     out["model"] = str(raw.get("model", ""))
     out["quant"] = str(raw.get("quant", "Q4_K_M"))
     return out
@@ -1597,6 +1613,9 @@ def modelbench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict | None = No
 # --------------------------------------------------------------------------
 
 
+MAX_REQUEST_BYTES = 2 * 1024 * 1024
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "svrspec"
     catalog: Catalog
@@ -1650,6 +1669,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > MAX_REQUEST_BYTES:
+                self._error("request body is too large", 413)
+                return
             raw = json.loads(self.rfile.read(length) or b"{}")
         except (ValueError, json.JSONDecodeError):
             self._error("malformed request body")

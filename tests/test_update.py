@@ -174,6 +174,12 @@ def test_launch_installer_refuses_off_windows(tmp_path):
 # -- the GUI payload ------------------------------------------------------
 
 
+def test_download_refuses_a_path_traversal_asset_name(tmp_path):
+    r = _release({"svrspec-9-setup.exe": "https://x/setup.exe", "SHA256SUMS": "https://x/s"})
+    with pytest.raises(UpdateError, match="파일 이름"):
+        download(r, tmp_path, asset_name="../escape-setup.exe")
+
+
 def test_update_payload_shape_when_disabled(monkeypatch):
     from svrspec.gui import update_payload
 

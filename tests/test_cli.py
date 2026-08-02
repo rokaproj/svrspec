@@ -100,6 +100,17 @@ def test_bad_storm_format_is_rejected():
         run(["recommend", "--model", "test-3b", "--storm", "forty-in-thirty"])
 
 
+def test_out_of_range_workload_values_name_the_flag_that_is_wrong():
+    # A workload that cannot happen must be refused at the door, and the
+    # message has to say which flag to fix -- not just that something is off.
+    with pytest.raises(SystemExit, match="--slots"):
+        run(["recommend", "--model", "test-3b", "--slots", "0"])
+    with pytest.raises(SystemExit, match="--sla"):
+        run(["recommend", "--model", "test-3b", "--sla", "0"])
+    with pytest.raises(SystemExit, match="--storm"):
+        run(["recommend", "--model", "test-3b", "--storm", "40/0"])
+
+
 def test_coefficients_are_listed_with_their_confidence(capsys):
     assert run(["list", "coefficients"]) == 0
     out = capsys.readouterr().out

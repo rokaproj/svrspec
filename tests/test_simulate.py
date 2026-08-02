@@ -132,6 +132,8 @@ def test_rejects_a_zero_rate_configuration():
         simulate(_workload(), prefill_tps=0.0, decode_by_active=FAST)
     with pytest.raises(ValueError):
         simulate(_workload(), prefill_tps=100.0, decode_by_active={})
+    with pytest.raises(ValueError, match="slots"):
+        simulate(_workload(slots=0), prefill_tps=100.0, decode_by_active=FAST)
 
 
 def test_decode_table_clamps_instead_of_extrapolating():

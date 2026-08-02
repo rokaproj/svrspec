@@ -116,10 +116,15 @@ def simulate(
     """
     if prefill_tps <= 0 or not decode_by_active:
         raise ValueError("prefill_tps must be positive and decode_by_active non-empty")
+    if workload.slots < 1:
+        raise ValueError("workload.slots must be at least 1")
 
     rng = random.Random(workload.seed + 1)
     tokens: TokenProfile = workload.tokens
-    incoming = list(arrivals if arrivals is not None else generate_arrivals(workload))
+    incoming = sorted(
+        list(arrivals if arrivals is not None else generate_arrivals(workload)),
+        key=lambda arrival: arrival.at_s,
+    )
 
     pending: list[_Request] = [
         _Request(

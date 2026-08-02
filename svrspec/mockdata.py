@@ -781,6 +781,12 @@ def to_jsonl(day: AlarmDay) -> str:
     return "\n".join(lines) + "\n"
 
 
+_ALARM_FIELDS = frozenset({
+    "id", "at_s", "device", "device_type", "code", "severity",
+    "message", "site", "storm_id", "parent_id", "prompt_tokens", "raw",
+})
+
+
 def from_jsonl(text: str) -> AlarmDay:
     """Inverse of `to_jsonl`. Refuses a feed it cannot fully reconstruct."""
     lines = [line for line in text.splitlines() if line.strip()]
@@ -800,8 +806,13 @@ def from_jsonl(text: str) -> AlarmDay:
             record = json.loads(line)
         except json.JSONDecodeError as exc:
             raise ValueError(f"{number}번째 줄이 JSON이 아니다: {exc}") from exc
+        if not isinstance(record, dict):
+            raise ValueError(f"{number}번째 줄이 JSON 객체가 아니다")
         if record.get("record") != "alarm":
             raise ValueError(f"{number}번째 줄의 record가 alarm이 아니다")
+        missing = sorted(_ALARM_FIELDS - set(record))
+        if missing:
+            raise ValueError(f"{number}번째 줄에 {', '.join(missing)} 가 없다")
         alarms.append(
             Alarm(
                 id=record["id"],
