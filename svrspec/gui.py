@@ -22,6 +22,7 @@ import webbrowser
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from typing import Any
 
 from . import report
 from .catalog import Catalog, CatalogError
@@ -1608,6 +1609,111 @@ def modelbench_payload(cat: Catalog, p: dict, cpu_id: str, raw: dict | None = No
     return _clean(base)
 
 
+#: Bounds for the hardware sweep's own knobs. Same discipline as
+#: `MB_AXIS_LIMITS`: the caller sets the operating point, but a form field is
+#: not allowed to ask the server for an unbounded search.
+HW_LIMITS = {
+    "ctx_tokens": (128, 1_048_576),
+    "output_tokens": (1, 131_072),
+    "target_s": (0.5, 3600.0),
+    "sockets": (1, 8),
+    "dimm_gb": (4, 1024),
+    "dimm_count": (0, 128),
+    "slots": (1, 256),
+}
+
+
+def _hw_int(raw: dict, key: str, fallback: int) -> int:
+    low, high = HW_LIMITS[key]
+    try:
+        return max(int(low), min(int(float(raw[key])), int(high)))
+    except (KeyError, TypeError, ValueError):
+        return fallback
+
+
+def _hw_float(raw: dict, key: str, fallback: float) -> float:
+    low, high = HW_LIMITS[key]
+    try:
+        return max(float(low), min(float(raw[key]), float(high)))
+    except (KeyError, TypeError, ValueError):
+        return fallback
+
+
+def hwsweep_payload(cat: Catalog, p: dict, raw: dict | None = None) -> dict:
+    """How far every CPU in the catalogue gets, at the operator's own setup.
+
+    Button-driven like the other heavy screens. The setup comes from the
+    request rather than from a fixed profile: the whole reason this screen
+    replaced the alarm-count axis is that "how many alarms per day" is one
+    deployment's question, while "what does this hardware top out at" is the
+    question anybody choosing a box has.
+
+    Imported lazily, like `modelbench`, so a partially installed tree still
+    serves the other screens.
+    """
+    raw = raw or {}
+    from .hwsweep import DEFAULT_TARGET_S, sweep
+
+    try:
+        got = sweep(
+            cat,
+            model_id=p["model"] or cat.models[0].id,
+            quant_id=p["quant"],
+            ctx_tokens=_hw_int(raw, "ctx_tokens", 4096),
+            output_tokens=_hw_int(raw, "output_tokens", int(p["output_tokens"])),
+            target_s=_hw_float(raw, "target_s", DEFAULT_TARGET_S),
+            sockets=_hw_int(raw, "sockets", int(p["sockets"])),
+            dimm_gb=_hw_int(raw, "dimm_gb", int(p["dimm_gb"])),
+            dimm_count=_hw_int(raw, "dimm_count", 0),
+            slots=_hw_int(raw, "slots", int(p["slots"])),
+        )
+    except CatalogError as exc:
+        return {"error": str(exc)}
+
+    return _clean({
+        "model_name": got.model_name,
+        "quant_id": got.quant_id,
+        "target_s": got.target_s,
+        "ctx_tokens": got.ctx_tokens,
+        "output_tokens": got.output_tokens,
+        "sockets": got.sockets,
+        "dimm_gb": got.dimm_gb,
+        "dimm_count": got.dimm_count,
+        "rows": [_hw_row(r) for r in got.rows],
+        "blocked": [{"cpu": c, "why": w} for c, w in got.blocked],
+        "notes": list(got.notes),
+    })
+
+
+def _hw_row(r: Any) -> dict:
+    return {
+        "cpu": r.cpu_id,
+        "label": r.label,
+        "vendor": r.vendor,
+        "cores": r.cores,
+        "threads": r.threads,
+        "sockets": r.sockets,
+        "channels": r.channels,
+        "bandwidth_gbs": _r(r.bandwidth_gbs, 1),
+        "ram_total_gb": r.ram_total_gb,
+        "ram_needed_gb": _r(r.ram_needed_gb, 2),
+        "fits": r.fits,
+        "gen_tps": _r(r.gen_tps, 1),
+        "ttft_s": _r(r.ttft_s, 2),
+        "max_users": r.max_users,
+        "capped": r.capped,
+        "total_tps_at_max": _r(r.total_tps_at_max, 1),
+        "response_s_at_max": _r(r.response_s_at_max, 2),
+        "ttft_s_at_max": _r(r.ttft_s_at_max, 2),
+        "decode_s_at_max": _r(r.decode_s_at_max, 2),
+        "limited_by": r.limited_by,
+        "bound_by": r.bound_by,
+        "tdp_w": r.tdp_w,
+        "price_usd": r.price_usd,
+        "notes": list(r.notes),
+    }
+
+
 # --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
@@ -1664,7 +1770,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
         if route not in ("/api/size", "/api/resources", "/api/capacity",
-                         "/api/lab", "/api/bench", "/api/modelbench"):
+                         "/api/lab", "/api/bench", "/api/modelbench",
+                         "/api/hwsweep"):
             self._error("not found", 404)
             return
         try:
@@ -1705,6 +1812,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(modelbench_payload(
                     self.catalog, _params(raw), str(raw.get("cpu", "")), raw
                 ))
+            elif route == "/api/hwsweep":
+                self._json(hwsweep_payload(self.catalog, _params(raw), raw))
             else:
                 self._json(size_payload(self.catalog, _params(raw)))
         except (CatalogError, ValueError, TypeError, AttributeError) as exc:
@@ -1882,6 +1991,14 @@ input[type=number],select{
   border-radius:var(--radius-sm);
 }
 input[type=number]:hover,select:hover{border-color:var(--text-tertiary)}
+/* The sweep's own setup row. Reuses .field/.row from the rail rather than
+   inventing a second form vocabulary -- the alignment fix that squared those
+   two up applies here for free, and a second set of control heights is exactly
+   how they drifted apart the first time. */
+.hw-form{display:flex; flex-direction:column; gap:var(--s3); margin:var(--s3) 0}
+.hw-form .row{display:grid; grid-template-columns:1fr 1fr; gap:var(--s3)}
+@media (max-width:640px){ .hw-form .row{grid-template-columns:1fr} }
+
 /* No margin-top: the fieldset's own gap already spaces this from the control
    above it, and adding both is what made the checkbox drift away from its
    group. */
@@ -3850,7 +3967,11 @@ def app_html(mode: str = "server") -> str:
     asm: {A: null, B: null}, asmError: {A: null, B: null},
     bench: {A: null, B: null},
     benchKey: null, benchBusy: false, benchError: null, benchStale: false,
-    metric: "cpu_pct", optionSig: "", seq: 0, benchSeq: 0
+    metric: "cpu_pct", optionSig: "", seq: 0, benchSeq: 0,
+    // The hardware sweep. Separate from `bench` on purpose: the bench replays
+    // one load against one assembled machine, this ranks every CPU in the
+    // catalogue. They go stale for different reasons and must not share a key.
+    hw: null, hwBusy: false, hwError: null, hwSeq: 0, hwStale: false
   };
   var bench = null;   // live playback state, or null
 
@@ -3997,6 +4118,18 @@ def app_html(mode: str = "server") -> str:
     return fetch("/api/bench", {method:"POST",
                                 headers:{"Content-Type":"application/json"},
                                 body: JSON.stringify(p)})
+      .then(function(r){ return r.json(); });
+  }
+
+  function askHwsweep(p){
+    if(DESKTOP){
+      if(!(window.pywebview.api && window.pywebview.api.hwsweep))
+        return Promise.resolve({error: NO_LAB_BRIDGE});
+      return window.pywebview.api.hwsweep(p);
+    }
+    return fetch("/api/hwsweep", {method:"POST",
+                                 headers:{"Content-Type":"application/json"},
+                                 body: JSON.stringify(p)})
       .then(function(r){ return r.json(); });
   }
 
@@ -4571,10 +4704,179 @@ def app_html(mode: str = "server") -> str:
     return box;
   }
 
+
+  // ---- hardware sweep -----------------------------------------------
+  // The load-test screen's primary answer. The bench below it replays one
+  // measured day against one machine, which is the delivery question; this
+  // asks the buying question instead -- given this model and this way of using
+  // it, how far does each box in the catalogue actually get. No alarm counts:
+  // the setup is concurrency, prompt length and reply length, because those
+  // are what a reader can judge without knowing somebody else's deployment.
+  function hwRequest(){
+    var p = params();
+    p.ctx_tokens = Math.max(128, labNum("hw-ctx", 4096));
+    p.output_tokens = Math.max(1, labNum("hw-out", 256));
+    p.target_s = Math.max(0.5, labNum("hw-target", 30));
+    p.sockets = Math.max(1, labNum("hw-sockets", 1));
+    p.dimm_gb = Math.max(4, labNum("dimm-gb", 64));
+    p.dimm_count = 0;   // one DIMM per channel, resolved per CPU
+    return p;
+  }
+
+  function runHwsweep(){
+    var mine = ++lab.hwSeq;
+    lab.hwBusy = true; lab.hwError = null;
+    renderLab();
+    askHwsweep(hwRequest()).then(function(d){
+      if(mine !== lab.hwSeq) return;        // a newer request already answered
+      lab.hwBusy = false;
+      if(d && d.error){ lab.hwError = d.error; lab.hw = null; }
+      else { lab.hw = d; lab.hwError = null; lab.hwStale = false; }
+      renderLab();
+    }).catch(function(err){
+      if(mine !== lab.hwSeq) return;
+      lab.hwBusy = false;
+      lab.hwError = (err && err.message) ? err.message : String(err);
+      renderLab();
+    });
+  }
+
+  function hwCeiling(r){
+    if(!r.max_users) return "못 씀";
+    return (r.capped ? "≥" : "") + r.max_users + "명";
+  }
+
+  function hwTable(d){
+    var box = el("div", "scroll"), tbl = el("table");
+    var COLS = [
+      ["CPU", function(r){ return r.cpu; }, ""],
+      ["코어", function(r){ return r.cores + "C"; }, "n"],
+      ["채널", function(r){ return r.channels + "ch"; }, "n"],
+      ["대역폭", function(r){ return num(r.bandwidth_gbs).toFixed(0) + " GB/s"; }, "n"],
+      ["1명 생성", function(r){ return num(r.gen_tps).toFixed(1) + " t/s"; }, "n"],
+      ["첫 토큰", function(r){ return num(r.ttft_s).toFixed(1) + "초"; }, "n"],
+      ["동시 한계", hwCeiling, "n"],
+      ["그때 총합", function(r){
+        return r.max_users ? num(r.total_tps_at_max).toFixed(0) + " t/s" : "-"; }, "n"],
+      ["막는 쪽", function(r){
+        return r.limited_by === "prefill" ? "프롬프트(코어)"
+             : r.limited_by === "decode" ? "생성(대역폭)" : "-"; }, ""],
+      ["RAM", function(r){ return num(r.ram_needed_gb).toFixed(0) + " GB"; }, "n"]
+    ];
+    var thead = el("thead"), htr = el("tr");
+    COLS.forEach(function(c){ htr.appendChild(el("th", c[2], c[0])); });
+    thead.appendChild(htr); tbl.appendChild(thead);
+
+    var tbody = el("tbody");
+    (d.rows || []).forEach(function(r){
+      var tr = el("tr");
+      COLS.forEach(function(c){ tr.appendChild(el("td", c[2], c[1](r))); });
+      if(!r.max_users) tr.classList.add("v-fail");
+      else if(!r.fits) tr.classList.add("v-marginal");
+      var why = [];
+      if(!r.fits) why.push("이 구성의 RAM으로는 안 올라간다 — DIMM 용량을 키워야 한다");
+      if(r.notes && r.notes.length) why.push(r.notes.join(" / "));
+      if(why.length) tr.title = why.join(" · ");
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody); box.appendChild(tbl);
+    return box;
+  }
+
+  function hwPanel(){
+    var card = el("div", "card");
+    card.appendChild(el("div", "label", "하드웨어별 성능 한계"));
+    card.appendChild(el("p", "prose",
+      "카탈로그의 모든 CPU에 같은 모델·같은 사용 조건을 걸고, 각각 어디까지 " +
+      "버티는지 재서 줄 세운다. 알람 건수와 무관하다 — 동시 사용자·프롬프트 길이·" +
+      "응답 길이만 정하면 된다. CPU마다 채널 수가 6·8·12로 다르므로 채널당 1개씩 " +
+      "채워 공평하게 비교한다."));
+
+    var form = el("div", "hw-form");
+    function field(id, label, value, hint){
+      var f = el("div", "field");
+      var l = el("label", "", label); l.setAttribute("for", id); f.appendChild(l);
+      var i = document.createElement("input");
+      i.type = "number"; i.id = id; i.value = value; i.min = "1";
+      i.addEventListener("change", function(){ lab.hwStale = !!lab.hw; renderLab(); });
+      f.appendChild(i);
+      if(hint) f.appendChild(el("div", "hint", hint));
+      return f;
+    }
+    var row = el("div", "row");
+    row.appendChild(field("hw-ctx", "프롬프트 토큰", 4096, "한 요청이 읽는 길이"));
+    row.appendChild(field("hw-out", "응답 토큰", 256, "한 요청이 쓰는 길이"));
+    form.appendChild(row);
+    var row2 = el("div", "row");
+    row2.appendChild(field("hw-target", "목표 응답 시간(초)", 30,
+                           "이 안에 끝나야 '버틴다'로 친다"));
+    row2.appendChild(field("hw-sockets", "소켓", 1, "지원 한도까지만 적용된다"));
+    form.appendChild(row2);
+    card.appendChild(form);
+
+    var btn = document.createElement("button");
+    btn.type = "button"; btn.id = "hw-run";
+    btn.disabled = lab.hwBusy;
+    btn.textContent = lab.hwBusy ? "재는 중…"
+      : (lab.hw ? "▶ 다시 재기" : "▶ 하드웨어 전체 재기");
+    btn.addEventListener("click", runHwsweep);
+    card.appendChild(btn);
+
+    if(lab.hwError){
+      card.appendChild(el("div", "note", "측정 실패: " + lab.hwError));
+      return card;
+    }
+    if(lab.hwBusy){
+      card.appendChild(el("p", "hint-row", "카탈로그 전체를 재는 중…"));
+      return card;
+    }
+    if(!lab.hw){
+      card.appendChild(el("p", "hint-row",
+        "버튼을 누르면 카탈로그의 CPU 전체를 이 조건으로 재서 보여준다."));
+      return card;
+    }
+    if(lab.hwStale){
+      card.appendChild(el("div", "note",
+        "조건이 바뀌었습니다. 아래 표는 이전 조건의 결과이니 다시 재 주세요."));
+    }
+
+    var d = lab.hw;
+    card.appendChild(el("p", "cpu",
+      d.model_name + " · " + d.quant_id + " · 프롬프트 " + d.ctx_tokens +
+      " 토큰 → 응답 " + d.output_tokens + " 토큰 · 목표 " + d.target_s + "초"));
+    var usable = (d.rows || []).filter(function(r){ return r.max_users > 0; });
+    card.appendChild(el("p", "hint",
+      (d.rows || []).length + "개 중 " + usable.length + "개가 이 조건을 만족한다" +
+      (d.blocked && d.blocked.length ? " · " + d.blocked.length + "개는 구성 불가" : "")));
+    card.appendChild(hwTable(d));
+
+    // The one sentence that changes what somebody buys. Prefill is shared
+    // across concurrent users and is compute-bound, so at a long prompt the
+    // core count sets the ceiling even though the tok/s column is won by
+    // memory bandwidth. Say it when it is actually true of this run.
+    var pre = usable.filter(function(r){ return r.limited_by === "prefill"; }).length;
+    if(usable.length && pre > usable.length / 2){
+      card.appendChild(el("p", "hint-row",
+        "이 조건에서는 대부분 프롬프트 처리가 먼저 막힌다. 프롬프트는 동시 사용자가 " +
+        "나눠 쓰는 연산이라, 여기서는 대역폭보다 코어 수가 동시 한계를 정한다 — " +
+        "1명 생성 속도가 빠른 부품이 동시 한계에서 밀리는 이유다."));
+    }
+    (d.notes || []).forEach(function(n){
+      card.appendChild(el("p", "hint-row", n));
+    });
+    if(d.blocked && d.blocked.length){
+      card.appendChild(el("p", "hint-row", "구성 불가: " +
+        d.blocked.map(function(b){ return b.cpu; }).join(", ")));
+    }
+    return card;
+  }
+
   function benchPanel(){
     var card = el("div", "card");
-    card.appendChild(el("div", "label", "부하 테스트"));
+    card.appendChild(el("div", "label", "알람 부하 재생"));
     card.appendChild(el("p", "prose",
+      "특정 알람 수요를 실제로 겪은 하루처럼 재생한다 — 납품 리포트가 답해야 하는 " +
+      "질문이고, 하드웨어를 고르는 질문은 위쪽 표가 답한다. " +
       "가상시간으로 즉시 완주시킨 뒤 프레임으로 접어 보낸다. 실제 모델이나 벤치마크를 " +
       "돌리지 않는다 — 재생은 브라우저가 하므로 배속을 올리거나 스톰 순간으로 바로 " +
       "건너뛸 수 있다. 조립과 달리 이 계산은 버튼으로만 돈다."));
@@ -4656,7 +4958,14 @@ def app_html(mode: str = "server") -> str:
     });
     host.appendChild(section("가상 서버 조립",
       "값을 바꾸면 즉시 다시 계산한다", pair));
-    host.appendChild(section("부하 테스트",
+    // The hardware sweep first, the alarm replay second. Both still work; the
+    // ordering is the answer to "알람 건수 기능은 별로 필요없다". The buying
+    // question -- what does each box top out at -- is what this screen leads
+    // with now, and the measured-day replay stays underneath for the delivery
+    // report, which is the one place a specific alarm count is the question.
+    host.appendChild(section("하드웨어별 성능 한계",
+      "카탈로그 전체 · 알람 건수와 무관", hwPanel()));
+    host.appendChild(section("알람 부하 재생",
       lab.asm.A ? lab.asm.A.cpu.label : "", benchPanel()));
 
     var ready = keys.every(function(k){ return lab.asm[k] && lab.asm[k].ok; });

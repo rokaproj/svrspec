@@ -193,6 +193,23 @@ class Api:
         except (CatalogError, ValueError, TypeError, KeyError) as exc:
             return {"error": str(exc)}
 
+    def hwsweep(self, params: dict | str) -> dict:
+        """How far every CPU in the catalogue gets, at the caller's setup.
+
+        Button-driven: it benches the whole catalogue, which is dozens of
+        builds, and none of it changes usefully while somebody is still typing
+        a context length.
+        """
+        raw = _object_params(params)
+        if raw is None:
+            return {"error": "expected an object of parameters"}
+        try:
+            from .gui import hwsweep_payload
+
+            return hwsweep_payload(self._catalog, _params(raw), raw)
+        except (CatalogError, ValueError, TypeError, KeyError) as exc:
+            return {"error": str(exc)}
+
     def update_check(self) -> dict:
         from .gui import update_payload
 

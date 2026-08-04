@@ -2573,3 +2573,84 @@ def test_the_bridge_wait_is_short_enough_to_sit_through():
     # Python must give up just after the page does, so the rescue follows the
     # message instead of leaving an error with nothing behind it.
     assert ms / 1000 < dt.BRIDGE_GRACE_S <= ms / 1000 + 3
+
+
+# --------------------------------------------------------------------------
+# The hardware sweep: the load-test screen's buying question
+# --------------------------------------------------------------------------
+
+
+def test_the_load_test_screen_leads_with_hardware_not_alarms():
+    """The alarm replay was demoted, not deleted, and the order says so.
+
+    "알람 건수 기능은 별로 필요없다" was answered by changing what the screen
+    leads with: the buying question (what does each box top out at) is first,
+    and the measured-day replay stays underneath for the delivery report --
+    the one place a specific alarm count really is the question.
+    """
+    lead = SERVER_HTML.index("하드웨어별 성능 한계")
+    replay = SERVER_HTML.index("알람 부하 재생")
+    assert lead < replay, "the alarm replay must not lead this screen"
+    # And the sweep says plainly that it does not depend on an alarm count.
+    assert "알람 건수와 무관" in SERVER_HTML
+
+
+def test_the_sweep_states_why_channels_are_populated_per_cpu():
+    """A hardware comparison that half-populates the wide parts is not one.
+
+    The catalogue mixes 6-, 8- and 12-channel CPUs, so a fixed DIMM count
+    would hand the wide parts a crippled memory subsystem. The screen has to
+    say it is filling per channel, because otherwise the ranking looks wrong
+    to anybody who knows the parts.
+    """
+    assert "채널당 1개씩" in SERVER_HTML
+    assert "6·8·12" in SERVER_HTML
+
+
+def test_the_sweep_explains_when_cores_beat_bandwidth():
+    """The one sentence on this screen that changes what somebody buys."""
+    assert "대역폭보다 코어 수가 동시 한계를 정한다" in SERVER_HTML
+    assert "프롬프트는 동시 사용자가" in SERVER_HTML
+
+
+def test_the_desktop_page_degrades_when_the_bridge_has_no_hwsweep_call():
+    """Same fixed-surface rule as every other added bridge call."""
+    assert "window.pywebview.api.hwsweep" in DESKTOP_HTML
+
+
+def test_hwsweep_payload_answers_and_echoes_its_setup(cat):
+    from svrspec.gui import _params, hwsweep_payload
+
+    p = _params({"model": "test-3b", "quant": "Q4_K_M"})
+    d = hwsweep_payload(cat, p, {"ctx_tokens": 2048, "output_tokens": 128,
+                                 "target_s": 20, "sockets": 1})
+    assert d["rows"], "no CPU was ranked"
+    # The rows are meaningless without what was asked to produce them.
+    assert d["ctx_tokens"] == 2048 and d["output_tokens"] == 128
+    assert d["target_s"] == 20
+    row = d["rows"][0]
+    for key in ("cpu", "cores", "channels", "max_users", "limited_by", "gen_tps"):
+        assert key in row, key
+    # Must survive strict JSON: the engine can hand back an infinity.
+    json.dumps(d, allow_nan=False)
+
+
+def test_hwsweep_payload_clamps_a_hostile_setup(cat):
+    """A form field may not ask the server for an unbounded search."""
+    from svrspec.gui import HW_LIMITS, _params, hwsweep_payload
+
+    p = _params({"model": "test-3b", "quant": "Q4_K_M"})
+    d = hwsweep_payload(cat, p, {"ctx_tokens": 10 ** 9, "output_tokens": -5,
+                                 "target_s": 10 ** 6, "sockets": 999})
+    assert d["ctx_tokens"] == HW_LIMITS["ctx_tokens"][1]
+    assert d["output_tokens"] == HW_LIMITS["output_tokens"][0]
+    assert d["target_s"] == HW_LIMITS["target_s"][1]
+    assert d["sockets"] == HW_LIMITS["sockets"][1]
+
+
+def test_hwsweep_payload_reports_a_bad_model_instead_of_raising(cat):
+    from svrspec.gui import _params, hwsweep_payload
+
+    p = _params({"model": "no-such-model", "quant": "Q4_K_M"})
+    d = hwsweep_payload(cat, p, {})
+    assert d.get("error")
