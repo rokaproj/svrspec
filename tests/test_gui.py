@@ -319,26 +319,60 @@ def test_a_window_whose_bridge_never_loads_rescues_itself():
     monkey.setattr(dt, "BRIDGE_GRACE_S", 0.05)
     try:
         api = dt.Api(Catalog(DATA))
-        api.window = FakeWindow()
+        api._window = FakeWindow()
         dt._rescue_if_dead(api)
-        assert api.window.url and api.window.url.startswith("http://127.0.0.1:")
+        assert api._window.url and api._window.url.startswith("http://127.0.0.1:")
 
         # The rescued page must come up in server mode. Reloading the window
         # onto a page that still waits for the bridge would rescue nothing.
-        page = urllib.request.urlopen(api.window.url, timeout=10).read().decode()
+        page = urllib.request.urlopen(api._window.url, timeout=10).read().decode()
         assert "data-mode='server'" in page
         assert json.loads(
-            urllib.request.urlopen(api.window.url + "api/catalog", timeout=10).read()
+            urllib.request.urlopen(api._window.url + "api/catalog", timeout=10).read()
         )["models"]
 
         # And a window that works is left alone.
         ok = dt.Api(Catalog(DATA))
-        ok.window = FakeWindow()
+        ok._window = FakeWindow()
         assert ok.bridge_ok() == "ok"
         dt._rescue_if_dead(ok)
-        assert ok.window.url is None
+        assert ok._window.url is None
     finally:
         monkey.undo()
+
+
+def test_nothing_but_methods_is_reachable_from_the_bridge_object():
+    """The Api must be a leaf as far as pywebview's bridge walk is concerned.
+
+    To build `window.pywebview.api`, pywebview walks the js_api object with
+    `dir()` + `getattr()` and recurses into every public attribute that is not a
+    method. A public `self.window` therefore aimed that walk at the pywebview
+    Window, then the WinForms form, then the WebView2 COM objects -- .NET
+    property reads off the UI thread, every one of them raising, and
+    `Rectangle.Empty.Empty.Empty…` recursing to the interpreter's limit. That
+    jams the UI thread while the bridge is still being injected: measured on the
+    shipped build, the bridge object appeared at 2.2s, at 5.4s, or never, where
+    making the attribute private gave 1.4s and an empty error log. "Never" is
+    what the operator sees as the app announcing it could not start.
+
+    Walking the object here is the check, because the failure is not in any
+    single line -- it is in one attribute being public. Assigning any non-method
+    to `self` reintroduces it, and this notices.
+    """
+    import inspect
+
+    from svrspec.desktop import Api
+
+    api = Api(Catalog(DATA))
+    api._window = object()  # what run() parks there; must stay invisible
+
+    public = [n for n in dir(api) if not n.startswith("_")]
+    assert public, "the page has to be able to call something"
+    non_methods = [n for n in public if not inspect.ismethod(getattr(api, n))]
+    assert non_methods == [], (
+        f"pywebview will recurse into {non_methods} while building the bridge; "
+        "give them leading underscores"
+    )
 
 
 def test_the_page_tells_python_the_bridge_answered():

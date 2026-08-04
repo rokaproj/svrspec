@@ -45,14 +45,35 @@ DEFAULT_SIZE = (1600, 1000)
 
 
 class Api:
-    """What the page can call. Every entry point validates before computing."""
+    """What the page can call. Every entry point validates before computing.
+
+    Every attribute here is underscored, and that is load-bearing rather than
+    style. To build `window.pywebview.api`, pywebview walks this object with
+    `dir()` + `getattr()` and *recurses into every public attribute that is not
+    a method*, so any object parked on `self` becomes part of the bridge's
+    object graph. A public `self.window` pointed that walk at the pywebview
+    Window, and from there into the WinForms form and the WebView2 COM objects:
+    .NET property reads from the wrong thread, each one raising, plus
+    `Rectangle.Empty.Empty.Empty…` recursing to the interpreter's limit.
+
+    Measured on the shipped build, only these attribute names differing: with
+    `window` public the bridge object appeared at 2.2s, at 5.4s, or never (two
+    runs in four -- the walk jams the UI thread, so `evaluate_js` blocks
+    forever); with it private, 1.4s and no errors logged at all. Never is what
+    the operator reports as the app refusing to start: the page gives up waiting
+    and says so, and a build without the loopback rescue has nothing after that.
+    5.4s is the same bug quietly tripping the page's 5s message on a build that
+    does.
+
+    So: nothing public but the methods the page actually calls.
+    """
 
     def __init__(self, catalog: Catalog | None = None) -> None:
         self._catalog = catalog or Catalog()
-        self.window = None  # set once pywebview has created it
+        self._window = None  # set once pywebview has created it
         #: Set by `bridge_ok` the first time the page reaches Python. Until it
         #: is set the window is, as far as we can tell, dead.
-        self.alive = threading.Event()
+        self._alive = threading.Event()
 
     # -- liveness --------------------------------------------------------
     def bridge_ok(self) -> str:
@@ -62,7 +83,7 @@ class Api:
         no error, no exception on the Python side, nothing in a log. The only
         way to notice is to require the page to say so.
         """
-        self.alive.set()
+        self._alive.set()
         return "ok"
 
     # -- data ------------------------------------------------------------
@@ -198,8 +219,8 @@ class Api:
             up.launch_installer(path)
         except up.UpdateError as exc:
             return f"설치 파일을 실행할 수 없다: {exc}"
-        if self.window is not None:
-            self.window.destroy()
+        if self._window is not None:
+            self._window.destroy()
         return f"업데이트 적용 중 · {release.tag} — 창이 닫혔다가 새 버전으로 다시 열린다"
 
     # -- files -----------------------------------------------------------
@@ -244,10 +265,10 @@ class Api:
         """Native save dialog, with a sane fallback if it is unavailable."""
         import webview
 
-        if self.window is None:
+        if self._window is None:
             return str(Path.home() / suggested)
         types = ("CSV (*.csv)",) if fmt == "csv" else ("HTML (*.html)",)
-        chosen = self.window.create_file_dialog(
+        chosen = self._window.create_file_dialog(
             webview.SAVE_DIALOG, save_filename=suggested, file_types=types
         )
         if not chosen:
@@ -276,7 +297,7 @@ def run(catalog: Catalog | None = None, debug: bool = False) -> int:
         min_size=MIN_SIZE,
         text_select=True,
     )
-    api.window = window
+    api._window = window
     threading.Thread(target=_rescue_if_dead, args=(api,), daemon=True).start()
     webview.start(debug=debug)
     return 0
@@ -301,7 +322,7 @@ def _rescue_if_dead(api: Api) -> None:
     `svrspec gui` in a terminal is not a fix, it is a handoff. The same page
     served over loopback needs no bridge at all, so serve it.
     """
-    if api.alive.wait(timeout=BRIDGE_GRACE_S):
+    if api._alive.wait(timeout=BRIDGE_GRACE_S):
         return
     try:
         from .gui import serve_background
@@ -311,7 +332,7 @@ def _rescue_if_dead(api: Api) -> None:
         # Loopback refused too. Leave the page's own message up: it is the only
         # thing left that can tell the operator anything.
         return
-    window = api.window
+    window = api._window
     if window is not None:
         window.load_url(url)
 
