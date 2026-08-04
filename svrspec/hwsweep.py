@@ -94,6 +94,11 @@ class SweepRow:
     response_s_at_max: float
     #: What ran out first at the reference point: bandwidth, compute, or cores.
     bound_by: str
+    #: What a single user waits, with nobody else on the box. Carried even when
+    #: `max_users` is 0, because that is exactly the case where the operator
+    #: needs a number: "미달" on all 43 rows with nothing else on screen does
+    #: not say whether the target was missed by a second or by a minute.
+    response_s_single: float
     #: How the response time at the ceiling splits, and which half dominates.
     #: Reporting only `bound_by` was misleading here: that is the *decode*
     #: bound, and decode is bandwidth-bound on nearly every part in this
@@ -126,6 +131,11 @@ class Sweep:
     dimm_gb: int
     dimm_count: int
     rows: list[SweepRow]
+    #: Set only when no CPU met the target. The fastest single-user response
+    #: any part managed, so the page can say how far off the setup is rather
+    #: than showing 43 identical failures and leaving the reader to guess
+    #: whether to buy a bigger box or ask a smaller question.
+    best_single_s: float | None
     #: CPUs that could not be evaluated at all, as (cpu_id, why). A build that
     #: cannot be assembled is not a slow build and must not be ranked as one.
     blocked: list[tuple[str, str]]
@@ -276,6 +286,7 @@ def sweep(
         dimm_gb=max(int(dimm_gb), 1),
         dimm_count=int(dimm_count),
         rows=rows,
+        best_single_s=_best_single(rows, target_s),
         blocked=blocked,
         notes=_notes(dimm_count, sockets),
     )
@@ -319,6 +330,8 @@ def _row(
         return float(pts[0].response_s) if pts else float("inf")
 
     base = at(1)
+    base_pts = list(base.concurrency)
+    base_pt = base_pts[0] if base_pts else None
     tp = list(base.throughput)
     if not tp:
         return None
@@ -348,6 +361,7 @@ def _row(
         total_tps_at_max=_f(top_pt.total_tps) if top_pt else 0.0,
         response_s_at_max=_f(top_pt.response_s) if top_pt else 0.0,
         bound_by=str(ref.decode_bound or ""),
+        response_s_single=_f(base_pt.response_s) if base_pt else 0.0,
         ttft_s_at_max=_f(top_pt.ttft_s) if top_pt else 0.0,
         decode_s_at_max=_decode_s(top_pt, output_tokens),
         limited_by=_limited_by(top_pt, output_tokens),
@@ -355,6 +369,18 @@ def _row(
         price_usd=_price(cpu),
         notes=list(notes),
     )
+
+
+def _best_single(rows: list[SweepRow], target_s: float) -> float | None:
+    """The closest any part got, when none of them got there.
+
+    None when something met the target -- the table answers the question then
+    and this would only be noise.
+    """
+    if any(r.max_users >= 1 for r in rows):
+        return None
+    times = [r.response_s_single for r in rows if r.response_s_single > 0]
+    return min(times) if times else None
 
 
 def _decode_s(point: Any, output_tokens: int) -> float:

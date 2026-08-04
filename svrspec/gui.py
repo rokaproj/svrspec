@@ -1679,6 +1679,7 @@ def hwsweep_payload(cat: Catalog, p: dict, raw: dict | None = None) -> dict:
         "sockets": got.sockets,
         "dimm_gb": got.dimm_gb,
         "dimm_count": got.dimm_count,
+        "best_single_s": _r(got.best_single_s, 1) if got.best_single_s else None,
         "rows": [_hw_row(r) for r in got.rows],
         "blocked": [{"cpu": c, "why": w} for c, w in got.blocked],
         "notes": list(got.notes),
@@ -1704,6 +1705,7 @@ def _hw_row(r: Any) -> dict:
         "capped": r.capped,
         "total_tps_at_max": _r(r.total_tps_at_max, 1),
         "response_s_at_max": _r(r.response_s_at_max, 2),
+        "response_s_single": _r(r.response_s_single, 2),
         "ttft_s_at_max": _r(r.ttft_s_at_max, 2),
         "decode_s_at_max": _r(r.decode_s_at_max, 2),
         "limited_by": r.limited_by,
@@ -4755,6 +4757,8 @@ def app_html(mode: str = "server") -> str:
       ["대역폭", function(r){ return num(r.bandwidth_gbs).toFixed(0) + " GB/s"; }, "n"],
       ["1명 생성", function(r){ return num(r.gen_tps).toFixed(1) + " t/s"; }, "n"],
       ["첫 토큰", function(r){ return num(r.ttft_s).toFixed(1) + "초"; }, "n"],
+      ["혼자 쓸 때", function(r){
+        return num(r.response_s_single).toFixed(1) + "초"; }, "n"],
       ["동시 한계", hwCeiling, "n"],
       ["그때 총합", function(r){
         return r.max_users ? num(r.total_tps_at_max).toFixed(0) + " t/s" : "-"; }, "n"],
@@ -4845,6 +4849,18 @@ def app_html(mode: str = "server") -> str:
       d.model_name + " · " + d.quant_id + " · 프롬프트 " + d.ctx_tokens +
       " 토큰 → 응답 " + d.output_tokens + " 토큰 · 목표 " + d.target_s + "초"));
     var usable = (d.rows || []).filter(function(r){ return r.max_users > 0; });
+    if(!usable.length && d.best_single_s){
+      // 43 rows of "못 씀" and nothing else is not an answer. Say how far off
+      // the setup is and which knob moves it, because the reader cannot tell
+      // from a table of failures whether to buy a bigger box or ask a smaller
+      // question -- and at this prompt length no CPU in the catalogue is big
+      // enough, so it is the question that has to move.
+      card.appendChild(el("div", "note",
+        "이 조건을 만족하는 CPU가 하나도 없다. 가장 빠른 부품도 혼자 쓸 때 " +
+        d.best_single_s + "초가 걸린다(목표 " + d.target_s + "초). " +
+        "프롬프트를 줄이거나, 응답을 짧게 하거나, 더 작은 모델·양자화를 쓰거나, " +
+        "목표 시간을 " + Math.ceil(d.best_single_s) + "초 이상으로 잡아야 한다."));
+    }
     card.appendChild(el("p", "hint",
       (d.rows || []).length + "개 중 " + usable.length + "개가 이 조건을 만족한다" +
       (d.blocked && d.blocked.length ? " · " + d.blocked.length + "개는 구성 불가" : "")));

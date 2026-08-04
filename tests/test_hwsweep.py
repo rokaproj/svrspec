@@ -252,3 +252,35 @@ def test_what_was_asked_comes_back_with_the_answer(cat: Catalog):
     assert s.output_tokens == 128
     assert s.target_s == 10.0
     assert s.model_name and s.quant_id == QUANT
+
+
+def test_an_impossible_setup_reports_how_far_off_it_is(cat: Catalog):
+    """43 rows of "못 씀" is not an answer.
+
+    A 14B model reading an 8k prompt spends over half a minute in prefill on
+    any CPU here, so a 15-second target is unreachable catalogue-wide. The
+    reader cannot tell from a table of failures whether to buy a bigger box or
+    ask a smaller question, so the sweep carries the closest any part got.
+    """
+    s = sweep(
+        cat, model_id="qwen2.5-14b-instruct", quant_id=QUANT,
+        ctx_tokens=8192, output_tokens=512, target_s=15.0, sockets=2,
+    )
+    assert s.rows, "the parts still have to be listed"
+    assert all(r.max_users == 0 for r in s.rows)
+    assert s.best_single_s and s.best_single_s > s.target_s
+    # And it is really the best of them, not just the first.
+    assert s.best_single_s == min(r.response_s_single for r in s.rows)
+
+
+def test_the_closest_figure_is_absent_when_something_qualifies(cat: Catalog):
+    """It would be noise on a run the table already answers."""
+    s = sweep(cat, model_id=MODEL, quant_id=QUANT, ctx_tokens=512, target_s=30.0)
+    assert any(r.max_users >= 1 for r in s.rows)
+    assert s.best_single_s is None
+
+
+def test_every_row_carries_its_single_user_time(cat: Catalog):
+    """Including the failures -- that is the case where it is needed most."""
+    s = sweep(cat, model_id=MODEL, quant_id=QUANT, ctx_tokens=8192)
+    assert all(r.response_s_single > 0 for r in s.rows)
