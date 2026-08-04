@@ -2,6 +2,9 @@
 /build/
 /dist/
 /out/
+# Generated from svrspec.__version__ by installer/setup_cxfreeze.py, so that the
+# Inno Setup script never carries a version of its own to go stale.
+/installer/version.iss
 *.egg-info/
 __pycache__/
 *.py[cod]
