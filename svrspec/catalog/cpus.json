@@ -2,6 +2,37 @@
   "schema": "cpus/v1",
   "entries": [
     {
+      "id": "xeon-gold-6234",
+      "vendor": "Intel",
+      "family": "Xeon Scalable 2nd Gen (Cascade Lake-SP)",
+      "model": "Gold 6234",
+      "cores": 8,
+      "threads": 16,
+      "base_ghz": 3.3,
+      "all_core_turbo_ghz": 4.0,
+      "max_turbo_ghz": 4.0,
+      "isa": [
+        "avx2",
+        "avx512",
+        "avx512-vnni"
+      ],
+      "mem_channels": 6,
+      "ddr_gen": "DDR4",
+      "max_ddr_mts": 2933,
+      "max_mem_gb": 1024,
+      "sockets_max": 4,
+      "l3_mb": 24.75,
+      "tdp_w": 130,
+      "launched": "Q2'19",
+      "price_usd": 2214,
+      "source": "third_party_db",
+      "source_url": "https://en.wikipedia.org/wiki/List_of_Intel_Xeon_processors_(Cascade_Lake%E2%80%93based)",
+      "notes": "cores/threads 8 (16), base 3.3 GHz, turbo \"4.0/4.0 GHz\", L3 24.75 MB, TDP 130W, socket LGA3647, \"3x 10.4 GT/s UPI\", memory \"6x DDR4-2933\", released May 2019 at $2214 -- all read from the Gold 6200 row of the cited per-SKU Cascade Lake list. The memory grade is worth stating plainly because two Wikipedia pages disagree: the summary table on the \"Cascade Lake\" overview page shows \"6 x DDR4-2400\" for the Gold 6200 parts, while this per-SKU list shows 6x DDR4-2933 for 6234, 6244 and 6246 alike. Intel's own product page for this SKU states DDR4-2933, so the per-SKU list is used and the overview table treated as stale. Cascade Lake-SP is a 6-channel DDR4 platform, which is why this row differs from every other Xeon here: the Ice Lake and later parts are 8-channel, so a 6234 build has three quarters of their memory bandwidth at the same channel speed, and that gap is the point of carrying it. all_core_turbo_ghz=4.0 is taken from the \"4.0/4.0\" turbo pair on the cited row, where both figures are equal; this is the frequency-optimised 8-core of its generation. max_mem_gb=1024 and sockets_max=4 are the Gold 6200 platform figures, NOT read per-SKU from the cited row. TDP 130W, socket FCLGA3647 and 8C/16T independently agree with the PassMark record. l3_mb=24.75 matches Intel's \"24.75M Cache\" naming; the overview table's 25 MB is the rounded figure. launched Q2'19 per the cited release date (May 2019); PassMark records first-seen as Q3 2019. passmark_multithread 17926 is PassMark's single-socket (cpuCount=1) CPU Mark, so it is comparable per-socket across this catalog. PassMark record: https://www.cpubenchmark.net/cpu.php?cpu=Intel+Xeon+Gold+6234+%40+3.30GHz&id=3518",
+      "passmark_multithread": 17926,
+      "socket": "FCLGA3647",
+      "memory_source_url": ""
+    },
+    {
       "id": "xeon-silver-4309y",
       "vendor": "Intel",
       "family": "Xeon Scalable 3rd Gen (Ice Lake-SP)",
